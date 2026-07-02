@@ -7,3 +7,4 @@ statsmodels>=0.14
 streamlit>=1.30
 plotly>=5.20
 pytest>=7.4
+biopython>=1.83
