@@ -113,7 +113,84 @@ REGULATOR_BLURBS = {
     ),
 }
 
+# One-sentence description of what each source file does, for anyone reading this
+# app who doesn't have (or doesn't want to dig through) the underlying Python
+# files. Used by file_ref() everywhere the app names a specific script.
+FILE_BLURBS = {
+    "data_loader.py": (
+        "loads the raw Excel file, strips whitespace, resolves pandas' "
+        "duplicate-column renaming, and separates the 3 core clock genes from "
+        "the ~3,000 downstream target genes."
+    ),
+    "network_builder.py": (
+        "builds the R (WCC → regulator) and T (regulator → target) matrices "
+        "that every other script in this project starts from."
+    ),
+    "ffl_analysis.py": (
+        "counts feedforward loops using the paper's own Hadamard-product "
+        "formula, `(R @ T) * T`."
+    ),
+    "null_models.py": (
+        "builds 1,000 randomly rewired versions of the network (each keeping "
+        "every regulator's target count and every gene's regulator-count fixed) "
+        "and recounts feedforward loops in each one, to test whether the real "
+        "count is more than chance would predict."
+    ),
+    "enrichment.py": (
+        "runs the hypergeometric (pairs) and convolved-hypergeometric (triples) "
+        "significance tests for every regulator combination, then applies the "
+        "Benjamini-Hochberg FDR correction across all 220 of them."
+    ),
+    "network_stats.py": (
+        "computes the degree distribution, hub sizes, power-law fit, and the "
+        "singly-/multiply-regulated gene split."
+    ),
+    "viz.py": (
+        "builds the Plotly figures used throughout this app: the hub-and-spoke "
+        "network diagram, the degree-distribution plot, and the null-model "
+        "histogram."
+    ),
+    "sequence_families.py": (
+        "parses the UniProt FASTA, finds candidate similar protein pairs via a "
+        "cheap k-mer prefilter, confirms them with real BLOSUM62 sequence "
+        "alignment, collapses duplicate UniProt records of the same gene, and "
+        "groups the rest into paralog families."
+    ),
+}
+
+
+def file_ref(filename: str) -> str:
+    """Render a `src/filename.py` reference with its one-sentence description,
+    so a reader without access to the Python source still knows what it does."""
+    desc = FILE_BLURBS.get(filename)
+    return f"`src/{filename}` (which {desc})" if desc else f"`src/{filename}`"
+
+
 st.set_page_config(page_title="Neurospora Clock Network", layout="wide", page_icon="🕐")
+
+# Shared column_config dicts so every results table shows human-readable
+# headers and sensibly formatted numbers, not raw snake_case column names.
+# Passing a key that isn't in the displayed DataFrame is harmless -- Streamlit
+# just ignores it -- so the same dict is reused across tables with different
+# column subsets.
+ENRICHMENT_COLUMN_CONFIG = {
+    "regulators": "Regulators",
+    "test_type": "Test type",
+    "observed_overlap": st.column_config.NumberColumn("Observed overlap", format="%d"),
+    "expected_overlap": st.column_config.NumberColumn("Expected overlap", format="%.1f"),
+    "direction": "Direction",
+    "p_value": st.column_config.NumberColumn("p-value", format="scientific"),
+    "q_value": st.column_config.NumberColumn("q-value", format="scientific"),
+    "significant_bh": st.column_config.CheckboxColumn("Significant (BH-FDR)"),
+}
+
+FAMILY_COLUMN_CONFIG = {
+    "gene_name": "Gene",
+    "description": "Description",
+    "is_clock_network_gene": st.column_config.CheckboxColumn("Clock-network gene?"),
+    "family_id": st.column_config.NumberColumn("Family ID", format="%d"),
+    "family_size": st.column_config.NumberColumn("Family size (k)", format="%d"),
+}
 
 
 @st.cache_resource
@@ -244,49 +321,13 @@ such divergence is reported explicitly rather than adjusted away; see the
    target genes than chance? A filterable results table.
 4. **🕸️ Network Viz** — an interactive diagram of the whole network; click through
    regulators to see their role and relationships.
-5. **📖 Methodology & Paper Comparison** — the technical detail: every number here
-   side-by-side with the paper's, and why they differ.
+5. **🧬 Gene Families** — which clock-network genes have close relatives elsewhere
+   in the genome, based on real protein sequence data.
+6. **📖 Methodology & Paper Comparison** — the technical detail: every number here
+   side-by-side with the paper's, why they differ, and a glossary of every term
+   used in this app.
 """
     )
-
-    with st.expander("📚 Glossary — key terms used throughout this app"):
-        st.markdown(
-            """
-- **Regulator** — one of the 11 genes/proteins (plus WCC) that control other genes
-  in this network. Split into two kinds:
-  - **Transcriptional regulator** — a classic transcription factor; turns target
-    genes' transcription on/off.
-  - **RNA operon** (post-transcriptional regulator) — an RNA-binding protein that
-    doesn't touch transcription, but instead controls how stable/long-lived a
-    target gene's mRNA is, effectively co-regulating a whole "operon" of otherwise
-    unlinked genes at the RNA level.
-- **Target gene / clock-controlled gene (ccg)** — a gene downstream of a regulator,
-  shown by the data to be circadian- and/or light-regulated.
-- **Hub** — a regulator and all of its target genes, treated as a unit; hub *size*
-  = number of target genes.
-- **Feedforward loop (FFL)** — a 3-node pattern: WCC regulates a regulator, and
-  both WCC and that regulator regulate the same target gene. Thought to introduce
-  a delay or reinforcement effect in gene expression timing.
-- **Degree** — the number of connections a node (regulator or gene) has. A
-  regulator's degree = its hub size; a gene's degree = how many regulators target it.
-- **Null model** — a randomized version of the same network (same regulator target
-  counts, same gene regulator-counts) used as a "chance" baseline for comparison.
-- **Z-score** — how many standard deviations the real (observed) value is from the
-  null model's average. Roughly, |Z| > ~2 is notable; near 0 means "no different
-  from chance."
-- **Hypergeometric test** — the standard statistical test for "do these two sets
-  share more/fewer members than you'd expect by chance," given their sizes and the
-  total population.
-- **p-value** — the probability of seeing an overlap this extreme (or more) by pure
-  chance, if there's really no relationship.
-- **q-value (BH-FDR corrected)** — a p-value adjusted for running many tests at
-  once (220, here), so "5% of my *significant* results are false positives" stays
-  true even after testing every regulator pair and triple. Always use q-value, not
-  raw p-value, to decide significance when many tests are run together.
-- **Enriched vs. depleted** — enriched = two regulators share *more* targets than
-  chance predicts; depleted = *fewer* than chance predicts.
-"""
-        )
 
 # ---------------------------------------------------------------------------
 # Tab: Matrix explorer
@@ -302,18 +343,53 @@ regulators targets which of the ~3,000 clock-controlled genes.
 
 - The **raw vs. cleaned** table below shows how many targets each regulator has,
   before and after fixing whitespace/duplicate-column issues in the original file
-  (see `src/data_loader.py`).
+  (exactly what "cleaning" means is spelled out just below, in its own dropdown).
 - Use the **gene lookup dropdown** to pick any target gene and see which
   regulator(s) control it.
 - The **full matrix** at the bottom is the actual 11 x ~3,000 binary table (1 =
   "this regulator targets this gene") that every other tab is computed from.
 """
         )
-    st.markdown(
-        "The raw Excel export is (11 regulators x 3402 columns) with whitespace, "
-        "pandas-mangled duplicate columns, and 3 core-clock-gene columns mixed in "
-        "with the target genes. See `src/data_loader.py` for the full cleaning rule."
-    )
+
+    with st.expander("🔧 What exactly does \"cleaning\" mean here? (the exact rule applied)"):
+        st.markdown(
+            f"""
+The raw Excel export (`data/raw/Connection_Matrix.xlsx`) is **{cleaning_report.raw_shape[0]}
+regulators × {cleaning_report.n_raw_columns} columns**, and isn't usable as-is. The
+cleaning rule applied — in plain terms, in the order it's actually applied — is:
+
+1. **Strip stray whitespace** from row and column labels (one row label and one
+   column label in the raw file had trailing spaces that would otherwise make them
+   look like different genes than they really are).
+2. **Un-mangle duplicate columns.** When a spreadsheet has the same column header
+   appear more than once, the tool that reads it (pandas) silently renames the
+   repeats by appending `.1`, `.2`, etc. — so what looks like different genes
+   (e.g. `NCU08295` and `NCU08295.1`) are actually the *same* gene column, listed
+   twice in the original file. This step reverses that renaming and treats them as
+   one column again. It found **{cleaning_report.n_duplicated_base_names} genes**
+   that were duplicated this way, spread across
+   **{cleaning_report.n_columns_in_duplicate_groups} raw columns**
+   ({cleaning_report.n_unique_base_names} distinct genes remained after undoing it).
+3. **Collapse duplicates.** For any gene that appeared in more than one (now
+   un-mangled) column, a regulator is counted as targeting that gene if it shows a
+   "1" in *any* of the duplicate columns (a logical OR).
+4. **Split out the 3 core clock genes** (*wc-1*, *wc-2*, *frq*) into their own group,
+   separate from the ~3,000 downstream target genes. These aren't "targets" in the
+   paper's model — they're the clock mechanism itself, taken as already known and
+   given, not something the regulators discovered/switched on. This tab's target-gene
+   counts and dropdown exclude these
+   ({', '.join(cleaning_report.core_clock_base_names)}).
+
+After all four steps: **{cleaning_report.n_target_genes_final} target genes** remain
+in the cleaned matrix used everywhere else in this app.
+
+The code that does exactly this (and nothing more) is `src/data_loader.py` — a script
+whose only job is turning the raw spreadsheet into the clean binary regulator×gene
+table every other file in this project starts from. It's read directly, not
+summarized from memory: every number above comes from actually running that
+cleaning step against the raw file.
+"""
+        )
 
     col1, col2, col3 = st.columns(3)
     col1.metric("Raw columns", cleaning_report.n_raw_columns)
@@ -323,7 +399,11 @@ regulators targets which of the ~3,000 clock-controlled genes.
     st.markdown("**Regulator target counts (row sums), raw vs. cleaned:**")
     cmp = pd.DataFrame({"raw": cleaning_report.raw_row_sums, "cleaned": cleaning_report.cleaned_row_sums})
     cmp.index = [f"{lab}  —  {REGULATOR_INFO.get(lab.strip(), {}).get('gene', '?')}" for lab in cmp.index]
-    st.dataframe(cmp, width="stretch")
+    st.dataframe(
+        cmp,
+        width="stretch",
+        column_config={"raw": "Raw target count", "cleaned": "Cleaned target count"},
+    )
 
     st.divider()
     st.markdown("**Look up a target gene**")
@@ -372,11 +452,7 @@ otherwise shuffled), is the observed FFL count unusually high? That's what the
 histogram below shows.
 """
         )
-    st.markdown(
-        "An FFL is: WCC regulates a regulator *B*, and both WCC and *B* regulate the "
-        "same target gene *C*. Counted via the Hadamard product `(R @ T) * T` "
-        "(paper, Section V-F)."
-    )
+    st.caption(f"Counted here by {file_ref('ffl_analysis.py')}.")
     col1, col2 = st.columns(2)
     col1.metric("Observed FFL count (this export)", ffl_result.total_ffl_count)
     col2.metric("Paper's reported FFL count", PAPER_REPORTED_FFL_COUNT)
@@ -384,6 +460,8 @@ histogram below shows.
     st.markdown("**FFL contribution per regulator (as the 'B' gene):**")
     contrib = ffl_result.per_regulator_ffl_count.sort_values(ascending=False)
     contrib.index = [f"{REGULATOR_INFO[lab]['gene']}" for lab in contrib.index]
+    contrib.index.name = "Regulator"
+    contrib.name = "FFL count"
     st.bar_chart(contrib)
 
     st.divider()
@@ -397,7 +475,8 @@ histogram below shows.
     if null_result is None:
         st.info(
             f"Null model not yet cached at `{NULL_CACHE_PATH}`. Run "
-            "`python src/null_models.py` (~8-9 minutes) to generate it."
+            f"`python src/null_models.py` (~8-9 minutes) to generate it — that's "
+            f"{file_ref('null_models.py')}."
         )
     else:
         col1, col2, col3, col4 = st.columns(4)
@@ -431,32 +510,45 @@ an urn").
 Because 220 tests are run at once, a raw p-value of 0.05 doesn't mean what it
 usually means — by chance alone, ~11 of 220 tests would look "significant." The
 **q-value** column fixes this (Benjamini-Hochberg FDR correction): filter on
-`q-value < 0.05` and at most 5% of *those* results are expected to be false
+`q-value ≤ 0.05` and at most 5% of *those* results are expected to be false
 positives, even across all 220 tests together.
 
 **Using the filters below:** narrow to just pairs or just triples, just enriched or
 just depleted relationships, and toggle "significant only" to hide anything that
-doesn't clear the q < 0.05 bar. Click a column header in the table to sort by it.
+doesn't clear the q ≤ 0.05 bar. Click a column header in the table to sort by it.
 """
         )
-    st.markdown(
-        "All C(11,2) = 55 regulator pairs and C(11,3) = 165 regulator triples, tested "
-        "against an exact hypergeometric null (pairs) / exact convolved-hypergeometric "
-        "null (triples), Benjamini-Hochberg FDR corrected across all 220 tests at "
-        "α = 0.05. The paper never ran this test."
+    st.caption(
+        "Pairs use an exact hypergeometric test; triples use a convolved-hypergeometric "
+        f"test (see module docstring for the derivation) — both run by {file_ref('enrichment.py')}. "
+        "The paper never ran either test."
     )
 
     if enrichment_df is None:
         st.info(
             f"Enrichment results not yet cached at `{ENRICHMENT_CACHE_PATH}`. Run "
-            "`python src/enrichment.py` (~1 minute) to generate it."
+            f"`python src/enrichment.py` (~1 minute) to generate it — that's "
+            f"{file_ref('enrichment.py')}."
         )
     else:
         n_sig = int(enrichment_df["significant_bh"].sum())
+        sig_direction_counts = enrichment_df.loc[enrichment_df["significant_bh"], "direction"].value_counts()
+        n_sig_enriched = int(sig_direction_counts.get("enriched", 0))
+        n_sig_depleted = int(sig_direction_counts.get("depleted", 0))
+
         col1, col2, col3 = st.columns(3)
         col1.metric("Total tests", len(enrichment_df))
-        col2.metric("Significant (BH-FDR < 0.05)", n_sig)
-        col3.metric("...all enriched or depleted?", enrichment_df.loc[enrichment_df["significant_bh"], "direction"].nunique())
+        col2.metric("Significant (BH-FDR ≤ 0.05)", n_sig)
+        col3.metric(
+            "...of which enriched vs. depleted",
+            f"{n_sig_enriched} / {n_sig_depleted}",
+            help=(
+                "Of the significant results, how many are enrichments (more shared "
+                "targets than chance) vs. depletions (fewer than chance). "
+                f"{n_sig_enriched} enriched, {n_sig_depleted} depleted here — see "
+                "the Methodology tab for why depletions dominate so completely."
+            ),
+        )
 
         col_a, col_b, col_c = st.columns(3)
         test_type_filter = col_a.multiselect(
@@ -468,7 +560,7 @@ doesn't clear the q < 0.05 bar. Click a column header in the table to sort by it
             help="Enriched = share more targets than chance; depleted = share fewer.",
         )
         sig_only = col_c.checkbox(
-            "Significant only (BH-FDR < 0.05)", value=True,
+            "Significant only (BH-FDR ≤ 0.05)", value=True,
             help="Hide any row whose corrected q-value is 0.05 or higher.",
         )
 
@@ -485,6 +577,8 @@ doesn't clear the q < 0.05 bar. Click a column header in the table to sort by it
             ],
             width="stretch",
             height=450,
+            hide_index=True,
+            column_config=ENRICHMENT_COLUMN_CONFIG,
         )
         st.markdown(
             "**Finding:** every significant result is a *depletion* — no regulator "
@@ -561,7 +655,7 @@ depleted relationships.
             st.markdown(REGULATOR_BLURBS.get(focus_label, "_No description available._"))
             col1, col2, col3 = st.columns(3)
             col1.metric("Target genes (hub size)", int(net.T.loc[focus_label].sum()))
-            col2.metric("Class", net.regulator_class[idx].replace("-", " "))
+            col2.metric("Class", net.regulator_class[idx].capitalize())
             col3.metric(
                 "FFLs as the 'B' regulator",
                 int(ffl_result.per_regulator_ffl_count.get(focus_label, 0))
@@ -584,6 +678,8 @@ depleted relationships.
                         related[["regulators", "test_type", "observed_overlap", "expected_overlap", "direction", "q_value"]],
                         width="stretch",
                         height=min(300, 45 + 35 * len(related)),
+                        hide_index=True,
+                        column_config=ENRICHMENT_COLUMN_CONFIG,
                     )
                 else:
                     st.caption("None at this threshold — try loosening the significance slider above.")
@@ -650,9 +746,61 @@ picture of every family that includes a clock-network gene.
     if families_df is None:
         st.info(
             f"Gene families not yet cached at `{FAMILIES_CACHE_PATH}`. Run "
-            "`python src/sequence_families.py` (~3 minutes) to generate it."
+            f"`python src/sequence_families.py` (~3 minutes) to generate it — "
+            f"that's {file_ref('sequence_families.py')}."
         )
     else:
+        n_clock = int(families_df["is_clock_network_gene"].sum())
+        n_total = len(families_df)
+        n_not_clock = n_total - n_clock
+
+        st.markdown("### What counts as a \"clock-network gene\" here — and why most genes don't")
+        st.caption(
+            f"Of the {n_total:,} genes in this analysis, only {n_clock:,} ({n_clock / n_total:.0%}) "
+            f"are marked as clock-network genes. The other {n_not_clock:,} ({n_not_clock / n_total:.0%}) "
+            "are real *N. crassa* genes too — just not part of the paper's clock model."
+        )
+        with st.expander("ℹ️ Why aren't most genes \"clock-network genes\"?", expanded=True):
+            st.markdown(
+                f"""
+**The definition used in this tab:** a gene counts as a "clock-network gene" if it's
+either (a) one of the paper's 11 regulators, or (b) one of the
+{cleaning_report.n_target_genes_final:,} target genes in the paper's fitted network
+(`data/raw/Connection_Matrix.xlsx`, the same matrix explored in the Matrix Explorer
+tab). Everything else in the FASTA — the other {n_not_clock:,} genes — is marked
+`is_clock_network_gene = False`.
+
+**Why the majority aren't clock-network genes, in order of how much each explains:**
+
+1. **The FASTA is the *entire* genome; the clock network is a deliberately chosen
+   slice of it.** `data/raw/uniprotkb_proteome_UP000001805_*.fasta` contains every
+   protein-coding gene *N. crassa* has — roughly 10,000+ genes total, covering every
+   biological process the organism does (metabolism, structure, reproduction, stress
+   response, etc.), not just the clock.
+2. **The paper itself only ever selected ~31% of the genome as "clock-controlled."**
+   Per the paper's own numbers, of about 11,000 total *N. crassa* genes, only 3,380
+   showed a circadian rhythm and/or a light-entrainment response in their RNA
+   profiling experiments and could be confidently assigned to a regulator in their
+   model fit. The other ~69% of the genome was never a candidate for "clock-network
+   gene" status in the first place — those genes are presumably doing other jobs
+   (housekeeping, metabolism, development, stress response) with no measured
+   circadian signature at all.
+3. **This app's own sequence-matching step lost a few more.** Of the
+   {cleaning_report.n_target_genes_final:,} target genes and 11 regulators the paper
+   *did* identify, only {n_clock:,} could actually be matched by name to a sequence in
+   this specific UniProt download (see the regulator resolution table below, and the
+   Matrix Explorer tab's cleaning-rule dropdown for the target-gene side of this same
+   problem) — some genes are recorded under a different symbol than the one the paper
+   used, and a few weren't found at all. So the count here is a slight *undercount* of
+   the paper's true clock network, not just "proteome minus clock network."
+
+In short: this isn't a data quality problem to fix — it's exactly what you'd expect,
+since a circadian clock is one biological program among many, and most of an
+organism's genome is doing something else entirely.
+"""
+            )
+
+        st.divider()
         st.markdown("### Regulator identifier resolution")
         st.caption(
             "Before building families, each of the paper's 11 regulators had to be "
@@ -690,11 +838,17 @@ picture of every family that includes a clock-network gene.
         st.divider()
         st.markdown("### Family size distribution")
         size_counts = families_df.drop_duplicates("family_id")["family_size"].value_counts().sort_index()
-        st.bar_chart(size_counts)
+        n_singletons = int(size_counts.get(1, 0))
         st.caption(
-            f"{int(size_counts.get(1, 0))} singleton genes with no "
-            "detected paralog in this analysis; the rest fall into families of 2 or more."
+            f"{n_singletons:,} genes ({n_singletons / size_counts.sum():.0%} of all "
+            f"{int(size_counts.sum()):,} families) have no detected paralog at all — "
+            "so large a majority that including them here would make every other bar "
+            "invisible. The chart below is families of size ≥ 2 only."
         )
+        multi_size_counts = size_counts[size_counts.index > 1]
+        multi_size_counts.index.name = "Family size (k)"
+        multi_size_counts.name = "Number of families"
+        st.bar_chart(multi_size_counts)
 
         st.divider()
         st.markdown("### Families of size k=3 and k=4")
@@ -717,6 +871,7 @@ picture of every family that includes a clock-network gene.
                         group[["gene_name", "description", "is_clock_network_gene"]],
                         width="stretch",
                         hide_index=True,
+                        column_config=FAMILY_COLUMN_CONFIG,
                     )
         else:
             st.caption("No k=3 or k=4 families found at current thresholds.")
@@ -734,6 +889,8 @@ picture of every family that includes a clock-network gene.
             clock_multi[["gene_name", "family_id", "family_size", "description"]],
             width="stretch",
             height=300,
+            hide_index=True,
+            column_config=FAMILY_COLUMN_CONFIG,
         )
 
         st.divider()
@@ -744,7 +901,10 @@ picture of every family that includes a clock-network gene.
             options=lookup_options,
             index=None,
             placeholder="Start typing…",
-            help="Search across all 9,747 canonical genes in this analysis, not just clock-network ones.",
+            help=(
+                f"Search across all {len(lookup_options):,} canonical genes in this "
+                "analysis, not just clock-network ones."
+            ),
         )
         if lookup_gene:
             fam_id = families_df.loc[families_df["gene_name"] == lookup_gene, "family_id"].iloc[0]
@@ -753,6 +913,7 @@ picture of every family that includes a clock-network gene.
                 members[["gene_name", "description", "is_clock_network_gene"]],
                 width="stretch",
                 hide_index=True,
+                column_config=FAMILY_COLUMN_CONFIG,
             )
 
         st.divider()
@@ -789,8 +950,9 @@ not a definitive, publication-grade orthology call.
 with tab_method:
     st.subheader("Reproduced from the paper vs. novel in this project")
     st.markdown(
-        """
-**Reproduced from the paper:**
+        f"""
+**Reproduced from the paper** — the code lives in {file_ref('network_builder.py')}
+and {file_ref('ffl_analysis.py')}:
 - R/T matrix construction (Section III: "the regulatory CCG proteins do not regulate
   each other" — R is trivial, WCC activates all 11 regulators, they don't regulate
   each other).
@@ -798,14 +960,20 @@ with tab_method:
 - The per-regulator "B-gene" FFL breakdown via inner products of the WCC row of T
   against each other row (explicitly stated in Section V-F).
 - The degree-distribution / hub-size / singly-vs-multiply-regulated comparisons
-  (Section V-E).
+  (Section V-E), computed by {file_ref('network_stats.py')}.
 
 **Novel in this project (the paper never computed these):**
 - A degree-preserving double-edge-swap null model giving an empirical Z-score and
-  p-value for the FFL count (`src/null_models.py`).
+  p-value for the FFL count — {file_ref('null_models.py')}.
 - Exact hypergeometric pairwise and convolved-hypergeometric triple-wise regulator
   co-targeting enrichment tests across all 220 combinations, Benjamini-Hochberg
-  FDR corrected at α = 0.05 (`src/enrichment.py`).
+  FDR corrected at α = 0.05 — {file_ref('enrichment.py')}.
+- Sequence-based paralog gene families from real protein sequence data —
+  {file_ref('sequence_families.py')}.
+
+All charts in every tab of this app (the hub diagram, degree-distribution plot, and
+null-model histogram) are built by {file_ref('viz.py')}, shared across tabs so the
+same colors and layout logic are used everywhere.
 """
     )
 
@@ -849,3 +1017,48 @@ numbers to match.
 
     st.subheader("Citation")
     st.markdown(PAPER_CITATION)
+
+    st.divider()
+    with st.expander("📚 Glossary — key terms used throughout this app"):
+        st.markdown(
+            """
+- **Regulator** — one of the 11 genes/proteins (plus WCC) that control other genes
+  in this network. Split into two kinds:
+  - **Transcriptional regulator** — a classic transcription factor; turns target
+    genes' transcription on/off.
+  - **RNA operon** (post-transcriptional regulator) — an RNA-binding protein that
+    doesn't touch transcription, but instead controls how stable/long-lived a
+    target gene's mRNA is, effectively co-regulating a whole "operon" of otherwise
+    unlinked genes at the RNA level.
+- **Target gene / clock-controlled gene (ccg)** — a gene downstream of a regulator,
+  shown by the data to be circadian- and/or light-regulated.
+- **Hub** — a regulator and all of its target genes, treated as a unit; hub *size*
+  = number of target genes.
+- **Feedforward loop (FFL)** — a 3-node pattern: WCC regulates a regulator, and
+  both WCC and that regulator regulate the same target gene. Thought to introduce
+  a delay or reinforcement effect in gene expression timing.
+- **Degree** — the number of connections a node (regulator or gene) has. A
+  regulator's degree = its hub size; a gene's degree = how many regulators target it.
+- **Null model** — a randomized version of the same network (same regulator target
+  counts, same gene regulator-counts) used as a "chance" baseline for comparison.
+- **Z-score** — how many standard deviations the real (observed) value is from the
+  null model's average. Roughly, |Z| > ~2 is notable; near 0 means "no different
+  from chance."
+- **Hypergeometric test** — the standard statistical test for "do these two sets
+  share more/fewer members than you'd expect by chance," given their sizes and the
+  total population.
+- **p-value** — the probability of seeing an overlap this extreme (or more) by pure
+  chance, if there's really no relationship.
+- **q-value (BH-FDR corrected)** — a p-value adjusted for running many tests at
+  once (220, here), so "5% of my *significant* results are false positives" stays
+  true even after testing every regulator pair and triple. Always use q-value, not
+  raw p-value, to decide significance when many tests are run together.
+- **Enriched vs. depleted** — enriched = two regulators share *more* targets than
+  chance predicts; depleted = *fewer* than chance predicts.
+- **Paralog / gene family** — genes descended from a common ancestral gene via
+  duplication, still recognizably similar in sequence. A gene "family" here is a
+  group of such genes; family *size* (k) is how many genes are in it.
+- **Canonical gene** — after collapsing duplicate UniProt records of the same
+  physical gene (see Gene Families tab), the one name kept to represent it.
+"""
+        )

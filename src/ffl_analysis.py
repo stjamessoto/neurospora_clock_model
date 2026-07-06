@@ -25,10 +25,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
 import pandas as pd
 
-from network_builder import ClockNetwork, WCC_INDEX, build_network
+from network_builder import ClockNetwork, build_network
 
 PAPER_REPORTED_FFL_COUNT = 71
 PAPER_OVERLAP_GENES = ["mrp-180/NCU08120", "trax/NCU06059", "emp-8/NCU04728", "NCU02213", "NCU08166"]

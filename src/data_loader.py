@@ -35,9 +35,8 @@ Cleaning rule applied:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-import numpy as np
 import pandas as pd
 
 NCU_PATTERN = re.compile(r"^NCU\d{5}$")
