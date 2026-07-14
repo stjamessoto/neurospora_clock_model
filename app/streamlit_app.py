@@ -31,7 +31,12 @@ from network_stats import (  # noqa: E402
 )
 from null_models import DEFAULT_CACHE_PATH as NULL_CACHE_PATH, load_result as load_null_result  # noqa: E402
 from enrichment import DEFAULT_OUTPUT_PATH as ENRICHMENT_CACHE_PATH  # noqa: E402
-from viz import degree_distribution_figure, hub_network_figure, null_distribution_figure  # noqa: E402
+from viz import (  # noqa: E402
+    degree_distribution_figure,
+    hub_network_figure,
+    hub_network_figure_3d,
+    null_distribution_figure,
+)
 from sequence_families import (  # noqa: E402
     DEFAULT_OUTPUT_PATH as FAMILIES_CACHE_PATH,
     EXCLUDED_REGULATORS,
@@ -319,8 +324,8 @@ such divergence is reported explicitly rather than adjusted away; see the
    loop) and whether it shows up more than random chance would predict.
 3. **🧪 Enrichment Tests** — do pairs/triples of regulators share more (or fewer)
    target genes than chance? A filterable results table.
-4. **🕸️ Network Viz** — an interactive diagram of the whole network; click through
-   regulators to see their role and relationships.
+4. **🕸️ Network Viz** — an interactive diagram of the whole network, in 2D or a
+   rotatable 3D; click through regulators to see their role and relationships.
 5. **🧬 Gene Families** — which clock-network genes have close relatives elsewhere
    in the genome, based on real protein sequence data.
 6. **📖 Methodology & Paper Comparison** — the technical detail: every number here
@@ -606,6 +611,12 @@ mean "these two regulators share more targets than chance" (enriched); red means
 "fewer than chance" (depleted). *In this dataset, every significant relationship
 turns out to be red/depleted — see the Methodology tab for why.*
 
+**2D vs. 3D:** both show the same data. In **3D**, the two regulator classes are
+also separated vertically — the 5 green transcriptional regulators form a ring
+above WCC, the 6 orange RNA operons a ring below it — so class membership reads
+from height as well as color. Click and drag inside a 3D diagram to rotate it,
+scroll (or pinch) to zoom.
+
 **To explore:** pick a regulator from **"Focus on a regulator"** below to highlight
 it and fade everything else into the background — its info, paper-sourced
 description, and full list of significant relationships will appear beneath the
@@ -614,6 +625,16 @@ chords count as "significant," and the checkboxes to show only enriched or only
 depleted relationships.
 """
         )
+
+    view_mode = st.segmented_control(
+        "Diagram view",
+        options=["2D", "3D"],
+        default="2D",
+        help="3D separates the two regulator classes vertically and lets you drag to rotate.",
+    )
+    view_mode = view_mode or "2D"
+    if view_mode == "3D":
+        st.caption("Drag to rotate, scroll to zoom. Green ring above WCC = transcriptional; orange ring below = RNA operons.")
 
     focus_options = ["Show all regulators"] + net.regulator_names
     col_focus, col_thresh = st.columns([2, 1])
@@ -639,8 +660,9 @@ depleted relationships.
         focus_idx = net.regulator_names.index(focus_choice)
         focus_label = net.regulator_labels[focus_idx]
 
+    figure_fn = hub_network_figure_3d if view_mode == "3D" else hub_network_figure
     st.plotly_chart(
-        hub_network_figure(
+        figure_fn(
             net, enrichment_df,
             q_threshold=q_threshold, show_enriched=show_enriched, show_depleted=show_depleted,
             focus_label=focus_label,

@@ -215,6 +215,192 @@ def hub_network_figure(
     return fig
 
 
+def hub_network_figure_3d(
+    net: ClockNetwork,
+    enrichment_df: pd.DataFrame | None = None,
+    q_threshold: float = 0.05,
+    show_enriched: bool = True,
+    show_depleted: bool = True,
+    focus_label: str | None = None,
+) -> go.Figure:
+    """3D variant of hub_network_figure: WCC at the origin, the 5
+    transcriptional regulators arranged in a ring above it and the 6
+    post-transcriptional (RNA operon) regulators in a ring below it, so the
+    two regulator classes separate visually along the vertical axis -- a
+    genuinely 3D layout, not a 2D one just tilted. Drag to rotate, scroll to
+    zoom. Same color/significance encoding and focus behavior as the 2D hub
+    diagram; see that function's docstring for what the colors mean.
+
+    Implementation note: unlike 2D Scatter, Plotly's Scatter3d only accepts
+    a single scalar for marker.opacity and marker.line.width (no per-point
+    arrays), so -- unlike the 2D version -- focus dimming is done by
+    splitting nodes into a small number of traces (one per opacity/width
+    combination) rather than one trace with per-point arrays.
+    """
+    labels = net.regulator_labels
+    names = net.regulator_names
+    classes = net.regulator_class
+    hub_sizes = net.T.sum(axis=1)
+
+    wcc_idx = labels.index("Wcc")
+    others = [i for i in range(len(labels)) if i != wcc_idx]
+
+    ring_groups: dict[str, list[int]] = {}
+    for i in others:
+        ring_groups.setdefault(classes[i], []).append(i)
+
+    pos = {wcc_idx: (0.0, 0.0, 0.0)}
+    for cls, z in [("transcriptional", 0.6), ("post-transcriptional", -0.6)]:
+        idxs = ring_groups.get(cls, [])
+        n = len(idxs)
+        if n == 0:
+            continue
+        r = float(np.sqrt(max(1 - z ** 2, 0.05)))
+        for k, i in enumerate(idxs):
+            angle = 2 * np.pi * k / n
+            pos[i] = (r * np.cos(angle), r * np.sin(angle), z)
+
+    focus_is_set = focus_label is not None and focus_label in labels
+
+    fig = go.Figure()
+
+    # Fixed spokes: WCC -> every other regulator
+    for i in others:
+        x0, y0, z0 = pos[wcc_idx]
+        x1, y1, z1 = pos[i]
+        touches_focus = focus_is_set and labels[i] == focus_label
+        opacity = 1.0 if (not focus_is_set or touches_focus) else 0.15
+        fig.add_trace(go.Scatter3d(
+            x=[x0, x1, None], y=[y0, y1, None], z=[z0, z1, None], mode="lines",
+            line=dict(color=BASELINE, width=3),
+            opacity=opacity,
+            hoverinfo="skip",
+            showlegend=(i == others[0]),
+            name="WCC regulation (fixed, from paper)",
+            legendgroup="wcc-spoke",
+        ))
+
+    # Chords: pairwise enrichment/depletion significant at q_threshold (novel extension)
+    if enrichment_df is not None and len(enrichment_df):
+        label_to_idx = {lab: i for i, lab in enumerate(labels)}
+        wanted_directions = set()
+        if show_enriched:
+            wanted_directions.add("enriched")
+        if show_depleted:
+            wanted_directions.add("depleted")
+        pairs = enrichment_df[
+            (enrichment_df["test_type"] == "pair")
+            & (enrichment_df["q_value"] <= q_threshold)
+            & (enrichment_df["direction"].isin(wanted_directions))
+        ]
+        legend_shown = {"enriched": False, "depleted": False}
+        pairs = pairs.assign(
+            _touches_focus=pairs.apply(
+                lambda r: focus_is_set and (r["reg_a"] == focus_label or r["reg_b"] == focus_label), axis=1
+            )
+        ).sort_values("_touches_focus")
+        for _, row in pairs.iterrows():
+            a, b = row["reg_a"], row["reg_b"]
+            if a not in label_to_idx or b not in label_to_idx:
+                continue
+            ia, ib = label_to_idx[a], label_to_idx[b]
+            x0, y0, z0 = pos[ia]
+            x1, y1, z1 = pos[ib]
+            direction = row["direction"]
+            color = BLUE if direction == "enriched" else RED
+            q = max(row["q_value"], 1e-300)
+            touches_focus = bool(row["_touches_focus"])
+            if not focus_is_set or touches_focus:
+                width = float(np.clip(-np.log10(q) / 8, 1, 6)) + 1
+                opacity = 1.0
+            else:
+                width = 2.0
+                opacity = 0.06
+            show_legend = not legend_shown[direction]
+            legend_shown[direction] = True
+            fig.add_trace(go.Scatter3d(
+                x=[x0, x1, None], y=[y0, y1, None], z=[z0, z1, None], mode="lines",
+                line=dict(color=color, width=width),
+                opacity=opacity,
+                hoverinfo="text",
+                text=f"{row['regulators']}: {direction} (observed={row['observed_overlap']}, "
+                     f"expected={row['expected_overlap']:.1f}, q={q:.2e})",
+                name=f"significant: {direction}",
+                showlegend=show_legend,
+                legendgroup=direction,
+            ))
+
+    # Nodes, grouped into a handful of traces so opacity/line-width (scalar-only
+    # in Scatter3d) can still vary between the focused node, WCC, and the rest.
+    max_hub = hub_sizes.max()
+
+    def _node_size(i: int) -> float:
+        base = 10 + 20 * (hub_sizes.iloc[i] / max_hub)
+        return base + 8 if focus_is_set and labels[i] == focus_label else base
+
+    if focus_is_set:
+        focus_idxs = [i for i in range(len(labels)) if labels[i] == focus_label]
+        wcc_idxs = [i for i in range(len(labels)) if labels[i] == "Wcc" and labels[i] != focus_label]
+        dim_idxs = [i for i in range(len(labels)) if i not in focus_idxs and i not in wcc_idxs]
+        node_groups = [
+            (focus_idxs, 1.0, 3.0),
+            (wcc_idxs, 1.0, 1.5),
+            (dim_idxs, 0.25, 1.0),
+        ]
+    else:
+        node_groups = [([i for i in range(len(labels))], 1.0, 1.5)]
+
+    for idxs, opacity, line_width in node_groups:
+        if not idxs:
+            continue
+        fig.add_trace(go.Scatter3d(
+            x=[pos[i][0] for i in idxs], y=[pos[i][1] for i in idxs], z=[pos[i][2] for i in idxs],
+            mode="markers+text",
+            marker=dict(
+                size=[_node_size(i) for i in idxs],
+                color=[CLASS_COLORS[classes[i]] for i in idxs],
+                opacity=opacity,
+                line=dict(width=line_width, color=SURFACE),
+            ),
+            text=[names[i] for i in idxs], textposition="top center",
+            textfont=dict(color=INK_PRIMARY, size=11),
+            hoverinfo="text",
+            hovertext=[
+                f"{names[i]} ({labels[i]})<br>{int(hub_sizes.iloc[i])} targets<br>{classes[i]}"
+                for i in idxs
+            ],
+            showlegend=False,
+        ))
+
+    # dummy traces for a clean class legend
+    for cls, color in CLASS_COLORS.items():
+        fig.add_trace(go.Scatter3d(
+            x=[None], y=[None], z=[None], mode="markers",
+            marker=dict(size=6, color=color), name=CLASS_LABELS[cls],
+        ))
+
+    title = "Clock network hub structure (3D — drag to rotate, scroll to zoom)"
+    if focus_is_set:
+        idx = labels.index(focus_label)
+        title += f" — focused on {names[idx]}"
+
+    axis_kwargs = dict(visible=False, showbackground=False, showgrid=False, zeroline=False, range=[-1.3, 1.3])
+    fig.update_layout(
+        title=title,
+        scene=dict(
+            xaxis=axis_kwargs, yaxis=axis_kwargs, zaxis=axis_kwargs,
+            camera=dict(eye=dict(x=1.5, y=1.5, z=0.9)),
+            bgcolor=SURFACE,
+        ),
+        height=650,
+        paper_bgcolor=SURFACE,
+        font=dict(color=INK_SECONDARY),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.05),
+        margin=dict(l=0, r=0, t=40, b=0),
+    )
+    return fig
+
+
 def degree_distribution_figure(result: NetworkStatsResult) -> go.Figure:
     """Log-log degree-value frequency plot with the fitted power law overlaid.
 
