@@ -8,3 +8,4 @@ streamlit>=1.30
 plotly>=5.20
 pytest>=7.4
 biopython>=1.83
+st-link-analysis>=0.4

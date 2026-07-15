@@ -32,11 +32,14 @@ from network_stats import (  # noqa: E402
 from null_models import DEFAULT_CACHE_PATH as NULL_CACHE_PATH, load_result as load_null_result  # noqa: E402
 from enrichment import DEFAULT_OUTPUT_PATH as ENRICHMENT_CACHE_PATH  # noqa: E402
 from viz import (  # noqa: E402
+    REGULATOR_COLORS,
     degree_distribution_figure,
+    ffl_network_figure,
     hub_network_figure,
     hub_network_figure_3d,
     null_distribution_figure,
 )
+from link_analysis import build_elements, build_styles  # noqa: E402
 from sequence_families import (  # noqa: E402
     DEFAULT_OUTPUT_PATH as FAMILIES_CACHE_PATH,
     EXCLUDED_REGULATORS,
@@ -44,6 +47,7 @@ from sequence_families import (  # noqa: E402
     UNRESOLVED_REGULATORS,
     resolve_regulator_gene_names,
 )
+from st_link_analysis import st_link_analysis  # noqa: E402
 
 DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "raw", "Connection_Matrix.xlsx")
 
@@ -155,6 +159,10 @@ FILE_BLURBS = {
         "network diagram, the degree-distribution plot, and the null-model "
         "histogram."
     ),
+    "link_analysis.py": (
+        "builds the Cytoscape.js graph (elements + per-regulator color styles) "
+        "for the force-directed Regulators + Genes view."
+    ),
     "sequence_families.py": (
         "parses the UniProt FASTA, finds candidate similar protein pairs via a "
         "cheap k-mer prefilter, confirms them with real BLOSUM62 sequence "
@@ -238,6 +246,16 @@ def _load_gene_families():
     return pd.read_csv(FAMILIES_CACHE_PATH)
 
 
+@st.cache_resource
+def _load_link_analysis_elements(_net):
+    return build_elements(_net)
+
+
+@st.cache_resource
+def _load_link_analysis_styles(_net):
+    return build_styles(_net)
+
+
 net = _load_network()
 cleaning_report = _load_cleaning_report()
 enrichment_df = _load_enrichment()
@@ -245,6 +263,8 @@ null_result = _load_null_model()
 ffl_result = _load_ffl_result(net)
 stats_result = _load_network_stats(net)
 families_df = _load_gene_families()
+link_elements = _load_link_analysis_elements(net)
+link_node_styles, link_edge_styles = _load_link_analysis_styles(net)
 regulator_gene_names = resolve_regulator_gene_names(REGULATOR_INFO)
 
 # ---------------------------------------------------------------------------
@@ -596,10 +616,15 @@ doesn't clear the q ≤ 0.05 bar. Click a column header in the table to sort by 
 # ---------------------------------------------------------------------------
 
 with tab_viz:
-    st.subheader("Hub structure — click through the network")
-    with st.expander("ℹ️ How to use this diagram", expanded=True):
-        st.markdown(
-            """
+    subtab_hub, subtab_genes, subtab_ffl = st.tabs(
+        ["🕸️ Hub structure", "🌐 Regulators + Genes", "🔁 FFL Network"]
+    )
+
+    with subtab_hub:
+        st.subheader("Hub structure — click through the network")
+        with st.expander("ℹ️ How to use this diagram", expanded=True):
+            st.markdown(
+                """
 This reproduces the paper's Figure 1A layout: **WCC at the center**, broadcasting
 out to the 11 downstream regulators (5 green transcriptional regulators, 6 orange
 RNA operons). Node **size** = how many target genes that regulator has (its hub
@@ -624,109 +649,196 @@ diagram. Use the **significance threshold** slider to loosen or tighten which
 chords count as "significant," and the checkboxes to show only enriched or only
 depleted relationships.
 """
-        )
-
-    view_mode = st.segmented_control(
-        "Diagram view",
-        options=["2D", "3D"],
-        default="2D",
-        help="3D separates the two regulator classes vertically and lets you drag to rotate.",
-    )
-    view_mode = view_mode or "2D"
-    if view_mode == "3D":
-        st.caption("Drag to rotate, scroll to zoom. Green ring above WCC = transcriptional; orange ring below = RNA operons.")
-
-    focus_options = ["Show all regulators"] + net.regulator_names
-    col_focus, col_thresh = st.columns([2, 1])
-    focus_choice = col_focus.selectbox(
-        "Focus on a regulator",
-        options=focus_options,
-        index=0,
-        help="Highlights this regulator and its significant relationships; fades the rest.",
-    )
-    q_threshold = col_thresh.select_slider(
-        "Significance threshold (q-value)",
-        options=[0.001, 0.01, 0.05, 0.1, 0.2, 0.5, 1.0],
-        value=0.05,
-        help="A chord is drawn if its BH-adjusted q-value is at or below this. Loosen it to see more relationships.",
-    )
-
-    col_e, col_d = st.columns(2)
-    show_enriched = col_e.checkbox("Show enriched (blue)", value=True, help="Regulator pairs sharing MORE targets than chance.")
-    show_depleted = col_d.checkbox("Show depleted (red)", value=True, help="Regulator pairs sharing FEWER targets than chance.")
-
-    focus_label = None
-    if focus_choice != "Show all regulators":
-        focus_idx = net.regulator_names.index(focus_choice)
-        focus_label = net.regulator_labels[focus_idx]
-
-    figure_fn = hub_network_figure_3d if view_mode == "3D" else hub_network_figure
-    st.plotly_chart(
-        figure_fn(
-            net, enrichment_df,
-            q_threshold=q_threshold, show_enriched=show_enriched, show_depleted=show_depleted,
-            focus_label=focus_label,
-        ),
-        width="stretch",
-    )
-
-    if focus_label is not None:
-        idx = net.regulator_labels.index(focus_label)
-        with st.container(border=True):
-            st.markdown(f"### {net.regulator_names[idx]} ({focus_label})")
-            st.markdown(REGULATOR_BLURBS.get(focus_label, "_No description available._"))
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Target genes (hub size)", int(net.T.loc[focus_label].sum()))
-            col2.metric("Class", net.regulator_class[idx].capitalize())
-            col3.metric(
-                "FFLs as the 'B' regulator",
-                int(ffl_result.per_regulator_ffl_count.get(focus_label, 0))
-                if focus_label != "Wcc" else "n/a (WCC is always 'A')",
             )
 
-            if enrichment_df is not None:
-                related = enrichment_df[
-                    ((enrichment_df["reg_a"] == focus_label)
-                     | (enrichment_df["reg_b"] == focus_label)
-                     | (enrichment_df["reg_c"] == focus_label))
-                    & (enrichment_df["q_value"] <= q_threshold)
-                    & (enrichment_df["direction"].isin(
-                        {d for d, show in [("enriched", show_enriched), ("depleted", show_depleted)] if show}
-                    ))
-                ].sort_values("q_value")
-                st.markdown(f"**Significant relationships involving {net.regulator_names[idx]} at q ≤ {q_threshold}:**")
-                if len(related):
-                    st.dataframe(
-                        related[["regulators", "test_type", "observed_overlap", "expected_overlap", "direction", "q_value"]],
-                        width="stretch",
-                        height=min(300, 45 + 35 * len(related)),
-                        hide_index=True,
-                        column_config=ENRICHMENT_COLUMN_CONFIG,
-                    )
-                else:
-                    st.caption("None at this threshold — try loosening the significance slider above.")
+        view_mode = st.segmented_control(
+            "Diagram view",
+            options=["2D", "3D"],
+            default="2D",
+            help="3D separates the two regulator classes vertically and lets you drag to rotate.",
+        )
+        view_mode = view_mode or "2D"
+        if view_mode == "3D":
+            st.caption("Drag to rotate, scroll to zoom. Green ring above WCC = transcriptional; orange ring below = RNA operons.")
 
-    st.divider()
-    st.subheader("Degree distribution")
-    st.caption(
-        "How many connections does a typical node have? Both regulators (many "
-        "connections) and target genes (usually 1-2) are counted together, as in "
-        "the paper's Figure 11."
-    )
-    st.markdown(
-        f"Paper reports a power-law exponent of {PAPER_POWER_LAW_EXPONENT} across all "
-        "network nodes (11 regulators + target genes)."
-    )
-    st.plotly_chart(degree_distribution_figure(stats_result), width="stretch")
+        focus_options = ["Show all regulators"] + net.regulator_names
+        col_focus, col_thresh = st.columns([2, 1])
+        focus_choice = col_focus.selectbox(
+            "Focus on a regulator",
+            options=focus_options,
+            index=0,
+            help="Highlights this regulator and its significant relationships; fades the rest.",
+        )
+        q_threshold = col_thresh.select_slider(
+            "Significance threshold (q-value)",
+            options=[0.001, 0.01, 0.05, 0.1, 0.2, 0.5, 1.0],
+            value=0.05,
+            help="A chord is drawn if its BH-adjusted q-value is at or below this. Loosen it to see more relationships.",
+        )
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Fitted exponent", f"{stats_result.power_law_exponent:.2f}", f"paper: {PAPER_POWER_LAW_EXPONENT}")
-    col2.metric("Avg. node degree", f"{stats_result.average_node_degree:.2f}", f"paper: {PAPER_AVG_NODE_DEGREE}")
-    col3.metric(
-        "Singly / multiply regulated",
-        f"{stats_result.singly_regulated} / {stats_result.multiply_regulated}",
-        f"paper: {PAPER_SINGLY_REGULATED} / {PAPER_MULTIPLY_REGULATED}",
-    )
+        col_e, col_d = st.columns(2)
+        show_enriched = col_e.checkbox("Show enriched (blue)", value=True, help="Regulator pairs sharing MORE targets than chance.")
+        show_depleted = col_d.checkbox("Show depleted (red)", value=True, help="Regulator pairs sharing FEWER targets than chance.")
+
+        focus_label = None
+        if focus_choice != "Show all regulators":
+            focus_idx = net.regulator_names.index(focus_choice)
+            focus_label = net.regulator_labels[focus_idx]
+
+        figure_fn = hub_network_figure_3d if view_mode == "3D" else hub_network_figure
+        st.plotly_chart(
+            figure_fn(
+                net, enrichment_df,
+                q_threshold=q_threshold, show_enriched=show_enriched, show_depleted=show_depleted,
+                focus_label=focus_label,
+            ),
+            width="stretch",
+        )
+
+        if focus_label is not None:
+            idx = net.regulator_labels.index(focus_label)
+            with st.container(border=True):
+                st.markdown(f"### {net.regulator_names[idx]} ({focus_label})")
+                st.markdown(REGULATOR_BLURBS.get(focus_label, "_No description available._"))
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Target genes (hub size)", int(net.T.loc[focus_label].sum()))
+                col2.metric("Class", net.regulator_class[idx].capitalize())
+                col3.metric(
+                    "FFLs as the 'B' regulator",
+                    int(ffl_result.per_regulator_ffl_count.get(focus_label, 0))
+                    if focus_label != "Wcc" else "n/a (WCC is always 'A')",
+                )
+
+                if enrichment_df is not None:
+                    related = enrichment_df[
+                        ((enrichment_df["reg_a"] == focus_label)
+                         | (enrichment_df["reg_b"] == focus_label)
+                         | (enrichment_df["reg_c"] == focus_label))
+                        & (enrichment_df["q_value"] <= q_threshold)
+                        & (enrichment_df["direction"].isin(
+                            {d for d, show in [("enriched", show_enriched), ("depleted", show_depleted)] if show}
+                        ))
+                    ].sort_values("q_value")
+                    st.markdown(f"**Significant relationships involving {net.regulator_names[idx]} at q ≤ {q_threshold}:**")
+                    if len(related):
+                        st.dataframe(
+                            related[["regulators", "test_type", "observed_overlap", "expected_overlap", "direction", "q_value"]],
+                            width="stretch",
+                            height=min(300, 45 + 35 * len(related)),
+                            hide_index=True,
+                            column_config=ENRICHMENT_COLUMN_CONFIG,
+                        )
+                    else:
+                        st.caption("None at this threshold — try loosening the significance slider above.")
+
+        st.divider()
+        st.subheader("Degree distribution")
+        st.caption(
+            "How many connections does a typical node have? Both regulators (many "
+            "connections) and target genes (usually 1-2) are counted together, as in "
+            "the paper's Figure 11."
+        )
+        st.markdown(
+            f"Paper reports a power-law exponent of {PAPER_POWER_LAW_EXPONENT} across all "
+            "network nodes (11 regulators + target genes)."
+        )
+        st.plotly_chart(degree_distribution_figure(stats_result), width="stretch")
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Fitted exponent", f"{stats_result.power_law_exponent:.2f}", f"paper: {PAPER_POWER_LAW_EXPONENT}")
+        col2.metric("Avg. node degree", f"{stats_result.average_node_degree:.2f}", f"paper: {PAPER_AVG_NODE_DEGREE}")
+        col3.metric(
+            "Singly / multiply regulated",
+            f"{stats_result.singly_regulated} / {stats_result.multiply_regulated}",
+            f"paper: {PAPER_SINGLY_REGULATED} / {PAPER_MULTIPLY_REGULATED}",
+        )
+
+    with subtab_genes:
+        st.subheader(f"All {net.T.shape[1]:,} target genes, hung off their regulators")
+        with st.expander("ℹ️ How to read this diagram", expanded=True):
+            st.markdown(
+                """
+Every one of this project's 3,026 target genes plotted as its own point,
+each connected by an edge to the regulator(s) that target it — laid out by
+Cytoscape.js's **fcose** force-directed algorithm rather than a fixed ring,
+so each regulator's targets pull together into their own starburst cluster
+purely from the pull of their shared edges.
+
+Each regulator gets **its own color** (11 total — see the legend below the
+diagram), applied to that regulator's node, its exclusively-targeted genes,
+and the edges between them, so a cluster's hub is identifiable on sight. The
+genes targeted by **two** regulators (this export's maximum per gene) sit
+between their two clusters in neutral gray, with an edge to each.
+
+**Click a node** to highlight its direct neighbors and fade the rest —
+built into the component, no extra controls needed. Drag to pan, scroll to
+zoom, and use the toolbar in the top-right corner for fullscreen or a JSON
+export of the graph.
+
+**If the graph looks too zoomed-in when this tab first loads:** click the
+target-shaped **"Fit to Screen"** icon in the top-right toolbar once — the
+component doesn't always auto-fit its very first render to the full width.
+"""
+            )
+
+        st_link_analysis(
+            link_elements,
+            layout="fcose",
+            node_styles=link_node_styles,
+            edge_styles=link_edge_styles,
+            height=750,
+            key="regulator_gene_link_analysis",
+        )
+
+        legend_cols = st.columns(6)
+        for i, lab in enumerate(net.regulator_labels):
+            with legend_cols[i % 6]:
+                color = REGULATOR_COLORS[lab]
+                st.markdown(
+                    f"<span style='color:{color}'>&#9679;</span> {net.regulator_names[i]}",
+                    unsafe_allow_html=True,
+                )
+
+    with subtab_ffl:
+        st.subheader(f"Feedforward-loop network ({ffl_result.total_ffl_count} loops)")
+        with st.expander("ℹ️ How to read this diagram", expanded=True):
+            st.markdown(
+                """
+This is the same feedforward-loop (FFL) count from the **FFLs & Null Model**
+tab — WCC (A) regulates a regulator (B), and both WCC and B regulate the same
+target gene (C) — laid out here as the actual loops it's counting, rather than
+just the summary numbers.
+
+**WCC sits at the center**; every regulator that completes at least one FFL as
+the "B" gene sits in a ring around it (gray spokes = the fixed WCC → B
+structure the paper specifies). Each B's FFL-completing target genes hang off
+it as small dots — the **solid colored line** is the B → C edge, the **dotted
+violet line** is the WCC → C edge that closes the same triangle back at the
+center.
+
+Use **"Focus on a regulator"** to isolate one regulator's loops.
+"""
+            )
+
+        ffl_focus_names = [n for n in net.regulator_names if n != "WCC"]
+        focus_choice_ffl = st.selectbox(
+            "Focus on a regulator",
+            options=["Show all regulators"] + ffl_focus_names,
+            index=0,
+            key="ffl_focus",
+            help="Isolate this regulator's feedforward loops; fade everything else.",
+        )
+        focus_label_ffl = None
+        if focus_choice_ffl != "Show all regulators":
+            focus_label_ffl = net.regulator_labels[net.regulator_names.index(focus_choice_ffl)]
+
+        if ffl_result.total_ffl_count == 0:
+            st.info("No feedforward loops in this export — nothing to draw.")
+        else:
+            st.plotly_chart(
+                ffl_network_figure(net, ffl_result, focus_label=focus_label_ffl),
+                width="stretch",
+            )
 
 # ---------------------------------------------------------------------------
 # Tab: gene families (sequence-based, novel extension using the FASTA)

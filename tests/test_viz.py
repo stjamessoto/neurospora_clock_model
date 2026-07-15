@@ -10,8 +10,14 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+from ffl_analysis import count_ffls  # noqa: E402
 from network_builder import build_network  # noqa: E402
-from viz import hub_network_figure, hub_network_figure_3d  # noqa: E402
+from viz import (  # noqa: E402
+    REGULATOR_COLORS,
+    ffl_network_figure,
+    hub_network_figure,
+    hub_network_figure_3d,
+)
 
 DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "raw", "Connection_Matrix.xlsx")
 ENRICHMENT_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "processed", "enrichment_results.csv")
@@ -20,6 +26,11 @@ ENRICHMENT_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "process
 @pytest.fixture(scope="module")
 def net():
     return build_network(DATA_PATH)
+
+
+@pytest.fixture(scope="module")
+def ffl_result(net):
+    return count_ffls(net)
 
 
 @pytest.fixture(scope="module")
@@ -51,8 +62,8 @@ def test_3d_figure_builds_with_wcc_focus(net, enrichment_df):
 def test_3d_figure_builds_without_enrichment_data(net):
     fig = hub_network_figure_3d(net, None)
     fig.to_dict()
-    # spokes (10) + node trace(s) + 3 legend dummies, no chord traces at all
-    assert len(fig.data) == 10 + 1 + 3
+    # spokes (10) + node trace(s) + 11 per-regulator legend dummies, no chord traces at all
+    assert len(fig.data) == 10 + 1 + 11
 
 
 def test_3d_figure_scalar_only_marker_fields(net, enrichment_df):
@@ -89,3 +100,40 @@ def test_3d_figure_class_rings_separate_on_z_axis(net):
     assert 0.0 in zs  # WCC at the origin
     assert any(z > 0 for z in zs)
     assert any(z < 0 for z in zs)
+
+
+def test_ffl_figure_builds_with_no_focus(net, ffl_result):
+    fig = ffl_network_figure(net, ffl_result)
+    fig.to_dict()
+    assert len(fig.data) > 0
+
+
+def test_ffl_figure_builds_with_regulator_focus(net, ffl_result):
+    fig = ffl_network_figure(net, ffl_result, focus_label="PostReg5 NCU08295")
+    fig.to_dict()
+
+
+def test_ffl_figure_gene_count_matches_ffl_result(net, ffl_result):
+    """Every gene with an FFL-completing (B, C) cell in ffl_result.ffl_matrix
+    should appear as exactly one dot in the diagram."""
+    fig = ffl_network_figure(net, ffl_result)
+    gene_markers = [t for t in fig.data if t.mode == "markers"]
+    total_genes = sum(len(t.x) for t in gene_markers)
+    expected = int((ffl_result.ffl_matrix.sum(axis=0) > 0).sum())
+    assert total_genes == expected
+
+
+def test_regulator_colors_has_all_eleven_regulators(net):
+    assert set(REGULATOR_COLORS) == set(net.regulator_labels)
+    assert len(set(REGULATOR_COLORS.values())) == 11  # all distinct
+
+
+def test_2d_figure_nodes_colored_per_regulator_not_class(net):
+    """Regression guard: node coloring switched from 3 class colors to 11
+    distinct per-regulator colors -- two regulators of the same class (e.g.
+    two transcriptional regulators) must not share a color."""
+    fig = hub_network_figure(net, None)
+    node_trace = next(t for t in fig.data if t.mode == "markers+text")
+    colors = list(node_trace.marker.color)
+    assert len(set(colors)) == len(net.regulator_labels)
+    assert colors == [REGULATOR_COLORS[lab] for lab in net.regulator_labels]

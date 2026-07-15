@@ -4,10 +4,11 @@ below, mirroring the paper's Figure 1A hub-and-spoke diagram: WCC at the
 center, the other 11 regulators arranged around it).
 
 Colors follow a fixed, colorblind-validated palette (see dataviz skill /
-references/palette.md): categorical hues assigned by regulator class
-(identity), the blue<->red diverging pair for enriched/depleted (polarity),
-one sequential blue hue for magnitude/fit lines, and neutral chart chrome
-(surface/gridline/ink) for everything that isn't data.
+references/palette.md): categorical hues assigned per individual regulator
+(identity, REGULATOR_COLORS), the blue<->red diverging pair for
+enriched/depleted (polarity), one sequential blue hue for magnitude/fit
+lines, and neutral chart chrome (surface/gridline/ink) for everything that
+isn't data.
 """
 from __future__ import annotations
 
@@ -15,15 +16,12 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-from network_builder import ClockNetwork
+from network_builder import REGULATOR_ORDER, ClockNetwork
 from network_stats import PAPER_POWER_LAW_EXPONENT, NetworkStatsResult
 from null_models import NullModelResult
 
 # --- palette tokens (light mode; see dataviz skill references/palette.md) ---
 BLUE = "#2a78d6"        # categorical slot 1 / sequential hue / diverging pole "enriched"
-GREEN = "#008300"       # categorical slot 4 -- matches paper's Fig. 1A transcriptional-regulator green
-VIOLET = "#4a3aa7"      # categorical slot 5 -- master regulator (WCC), distinct from the two classes
-ORANGE = "#eb6834"      # categorical slot 8 -- matches paper's Fig. 1A post-transcriptional-regulator orange
 RED = "#e34948"         # diverging pole "depleted"
 SURFACE = "#fcfcfb"
 GRIDLINE = "#e1e0d9"
@@ -32,16 +30,27 @@ INK_PRIMARY = "#0b0b0b"
 INK_SECONDARY = "#52514e"
 INK_MUTED = "#898781"
 
-CLASS_COLORS = {
-    "master": VIOLET,
-    "transcriptional": GREEN,
-    "post-transcriptional": ORANGE,
-}
-CLASS_LABELS = {
-    "master": "Master regulator (WCC)",
-    "transcriptional": "Transcriptional regulator",
-    "post-transcriptional": "Post-transcriptional regulator (RNA operon)",
-}
+# One distinct hue per regulator (11 total), extending the 8-slot categorical
+# palette with 3 more hues chosen for CVD separation (validated with
+# scripts/validate_palette.js --pairs all: worst all-pairs Machado-2009 CVD
+# deltaE 11.2, the same floor the base 8 hues already sit at -- the 3
+# additions don't make the worst case any worse). At 11 slots this sits in
+# the palette's documented 8-12 "floor" band, legal only paired with
+# secondary encoding -- every node this colors also carries a visible text
+# label, in every figure that uses it.
+REGULATOR_COLORS = dict(zip(REGULATOR_ORDER, [
+    "#2a78d6",  # Wcc -- blue
+    "#1baf7a",  # Reg1 NCU07392 (pro-1) -- aqua
+    "#eda100",  # Reg2 NCU01640 (rpn-4) -- amber
+    "#008300",  # Reg3 NCU06108 -- green
+    "#4a3aa7",  # Reg4 NCU07155 -- violet
+    "#e34948",  # PostReg5 NCU08295 (lhp-1) -- red
+    "#e87ba4",  # PostReg6 NCU04504 (rrp-3) -- pink
+    "#eb6834",  # PostReg7 NCU03363 -- orange
+    "#72d025",  # PostReg8 NCU04799 (pab-1) -- lime
+    "#39c6c6",  # PostReg9 NCU00919 (rok-1) -- cyan
+    "#c825d0",  # PostReg10 NCU09349 (has-1) -- magenta-purple
+]))
 
 _AXIS_STYLE = dict(gridcolor=GRIDLINE, linecolor=BASELINE, tickfont=dict(color=INK_MUTED))
 
@@ -160,7 +169,7 @@ def hub_network_figure(
 
     node_x = [pos[i][0] for i in range(len(labels))]
     node_y = [pos[i][1] for i in range(len(labels))]
-    node_color = [CLASS_COLORS[c] for c in classes]
+    node_color = [REGULATOR_COLORS[lab] for lab in labels]
     max_hub = hub_sizes.max()
     node_size = [16 + 26 * (hub_sizes.iloc[i] / max_hub) for i in range(len(labels))]
     if focus_is_set:
@@ -190,11 +199,11 @@ def hub_network_figure(
         hoverinfo="text", hovertext=hover, showlegend=False,
     ))
 
-    # dummy traces for a clean class legend
-    for cls, color in CLASS_COLORS.items():
+    # dummy traces for a clean per-regulator legend
+    for i, lab in enumerate(labels):
         fig.add_trace(go.Scatter(
             x=[None], y=[None], mode="markers",
-            marker=dict(size=10, color=color), name=CLASS_LABELS[cls],
+            marker=dict(size=10, color=REGULATOR_COLORS[lab]), name=names[i],
         ))
 
     title = "Clock network hub structure"
@@ -358,7 +367,7 @@ def hub_network_figure_3d(
             mode="markers+text",
             marker=dict(
                 size=[_node_size(i) for i in idxs],
-                color=[CLASS_COLORS[classes[i]] for i in idxs],
+                color=[REGULATOR_COLORS[labels[i]] for i in idxs],
                 opacity=opacity,
                 line=dict(width=line_width, color=SURFACE),
             ),
@@ -372,11 +381,11 @@ def hub_network_figure_3d(
             showlegend=False,
         ))
 
-    # dummy traces for a clean class legend
-    for cls, color in CLASS_COLORS.items():
+    # dummy traces for a clean per-regulator legend
+    for i, lab in enumerate(labels):
         fig.add_trace(go.Scatter3d(
             x=[None], y=[None], z=[None], mode="markers",
-            marker=dict(size=6, color=color), name=CLASS_LABELS[cls],
+            marker=dict(size=6, color=REGULATOR_COLORS[lab]), name=names[i],
         ))
 
     title = "Clock network hub structure (3D — drag to rotate, scroll to zoom)"
@@ -397,6 +406,150 @@ def hub_network_figure_3d(
         font=dict(color=INK_SECONDARY),
         legend=dict(orientation="h", yanchor="bottom", y=-0.05),
         margin=dict(l=0, r=0, t=40, b=0),
+    )
+    return fig
+
+
+def ffl_network_figure(net: ClockNetwork, ffl_result, focus_label: str | None = None) -> go.Figure:
+    """2D node-link diagram of every feedforward loop counted by
+    ``ffl_analysis.count_ffls``: WCC (A) at the center, every regulator (B)
+    that completes at least one FFL arranged in a ring around it (gray
+    spokes, the fixed WCC -> B structure), and each B's FFL-completing
+    target genes (C) as small dots hanging off it -- solid line for the
+    B -> C edge, dashed line for the WCC -> C edge that's the second leg of
+    the same triangle. This doesn't introduce any new data: it's the same
+    ``(R @ T) * T`` result already shown as numbers in the FFLs & Null Model
+    tab, laid out as the loops it's actually counting.
+    """
+    labels = net.regulator_labels
+    names = net.regulator_names
+    classes = net.regulator_class
+    wcc_idx = labels.index("Wcc")
+
+    # ffl_result.ffl_matrix is (R @ T) * T -- since R's only nonzero row is
+    # WCC's, every nonzero cell of that matrix sits on the WCC row (see
+    # ffl_analysis.py's docstring), not on each B regulator's own row. The
+    # actual per-(B, C) FFL pairs -- gene c completes a loop through
+    # regulator b iff BOTH WCC and b target c -- are recovered the same way
+    # ffl_analysis.py computes per_regulator_ffl_count: an AND of the two
+    # regulators' rows in net.T, not a lookup into ffl_matrix by row.
+    wcc_row = net.T.loc["Wcc"].astype(bool)
+    b_labels = [lab for lab in labels if lab != "Wcc" and (wcc_row & net.T.loc[lab].astype(bool)).any()]
+    n_b = len(b_labels)
+
+    b_pos = {}
+    for k, lab in enumerate(b_labels):
+        angle = 2 * np.pi * k / max(n_b, 1) - np.pi / 2
+        b_pos[lab] = (2.2 * np.cos(angle), 2.2 * np.sin(angle))
+    wcc_pos = (0.0, 0.0)
+
+    gene_pos = {}
+    gene_of = {}  # gene -> b_label
+    for lab in b_labels:
+        genes = list(net.T.columns[wcc_row & net.T.loc[lab].astype(bool)])
+        n = len(genes)
+        bx, by = b_pos[lab]
+        angle0 = np.arctan2(by, bx)
+        spread = np.linspace(-0.35, 0.35, n) if n > 1 else [0.0]
+        for gene, da in zip(genes, spread):
+            a = angle0 + da
+            gene_pos[gene] = (3.3 * np.cos(a), 3.3 * np.sin(a))
+            gene_of[gene] = lab
+
+    focus_is_set = focus_label is not None and focus_label in labels
+    fig = go.Figure()
+
+    # WCC -> B spokes (fixed structure)
+    for lab in b_labels:
+        x1, y1 = b_pos[lab]
+        touches_focus = focus_is_set and lab == focus_label
+        opacity = 1.0 if (not focus_is_set or touches_focus) else 0.15
+        fig.add_trace(go.Scatter(
+            x=[wcc_pos[0], x1, None], y=[wcc_pos[1], y1, None], mode="lines",
+            line=dict(color=BASELINE, width=2),
+            opacity=opacity, hoverinfo="skip", showlegend=(lab == b_labels[0]),
+            name="WCC → B (fixed)", legendgroup="wcc-b",
+        ))
+
+    # B -> C (solid) and WCC -> C (dashed) -- the two legs completing each loop
+    legend_shown = {"b_to_c": False, "wcc_to_c": False}
+    for gene, lab in gene_of.items():
+        gx, gy = gene_pos[gene]
+        bx, by = b_pos[lab]
+        touches_focus = focus_is_set and lab == focus_label
+        opacity = 1.0 if (not focus_is_set or touches_focus) else 0.06
+        color = REGULATOR_COLORS[lab]
+        fig.add_trace(go.Scatter(
+            x=[bx, gx, None], y=[by, gy, None], mode="lines",
+            line=dict(color=color, width=1.5),
+            opacity=opacity, hoverinfo="text", text=f"{lab} → {gene}",
+            showlegend=not legend_shown["b_to_c"], name="B → C", legendgroup="b_to_c",
+        ))
+        legend_shown["b_to_c"] = True
+        fig.add_trace(go.Scatter(
+            x=[wcc_pos[0], gx, None], y=[wcc_pos[1], gy, None], mode="lines",
+            line=dict(color=REGULATOR_COLORS["Wcc"], width=1, dash="dot"),
+            opacity=opacity, hoverinfo="text", text=f"Wcc → {gene}",
+            showlegend=not legend_shown["wcc_to_c"], name="WCC → C", legendgroup="wcc_to_c",
+        ))
+        legend_shown["wcc_to_c"] = True
+
+    # gene markers
+    for lab in b_labels:
+        genes = [g for g, b in gene_of.items() if b == lab]
+        if not genes:
+            continue
+        touches_focus = focus_is_set and lab == focus_label
+        opacity = 1.0 if (not focus_is_set or touches_focus) else 0.1
+        color = REGULATOR_COLORS[lab]
+        fig.add_trace(go.Scatter(
+            x=[gene_pos[g][0] for g in genes], y=[gene_pos[g][1] for g in genes],
+            mode="markers", marker=dict(size=8, color=color, opacity=opacity, line=dict(width=1, color=SURFACE)),
+            hoverinfo="text", hovertext=genes, showlegend=False,
+        ))
+
+    # WCC + B regulator nodes
+    node_labels = ["Wcc"] + b_labels
+    node_pos = {**{"Wcc": wcc_pos}, **b_pos}
+    hub_sizes = net.T.sum(axis=1)
+    max_hub = hub_sizes.max()
+    node_x = [node_pos[lab][0] for lab in node_labels]
+    node_y = [node_pos[lab][1] for lab in node_labels]
+    node_color = [REGULATOR_COLORS[lab] for lab in node_labels]
+    node_size = [16 + 26 * (hub_sizes.loc[lab] / max_hub) for lab in node_labels]
+    if focus_is_set:
+        node_size = [s + 10 if lab == focus_label else s for s, lab in zip(node_size, node_labels)]
+        node_opacity = [1.0 if (lab == focus_label or lab == "Wcc") else 0.3 for lab in node_labels]
+    else:
+        node_opacity = [1.0] * len(node_labels)
+    fig.add_trace(go.Scatter(
+        x=node_x, y=node_y, mode="markers+text",
+        marker=dict(size=node_size, color=node_color, opacity=node_opacity, line=dict(width=1.5, color=SURFACE)),
+        text=[names[labels.index(lab)] for lab in node_labels], textposition="top center",
+        textfont=dict(color=INK_PRIMARY),
+        hoverinfo="text",
+        hovertext=[
+            f"{names[labels.index(lab)]} ({lab})<br>"
+            f"{int(ffl_result.per_regulator_ffl_count.get(lab, 0))} FFLs as B"
+            if lab != "Wcc" else f"WCC — {ffl_result.total_ffl_count} total FFLs (always A)"
+            for lab in node_labels
+        ],
+        showlegend=False,
+    ))
+
+    title = f"Feedforward-loop network ({ffl_result.total_ffl_count} FFLs, {len(gene_pos)} target genes)"
+    if focus_is_set:
+        title += f" — focused on {names[labels.index(focus_label)]}"
+
+    fig.update_layout(
+        title=title,
+        xaxis=dict(visible=False, range=[-4, 4]),
+        yaxis=dict(visible=False, range=[-4, 4], scaleanchor="x"),
+        height=650,
+        plot_bgcolor=SURFACE,
+        paper_bgcolor=SURFACE,
+        font=dict(color=INK_SECONDARY),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.1),
     )
     return fig
 
