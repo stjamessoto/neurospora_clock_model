@@ -10,13 +10,17 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+from binding_strength import load_binding_strength_by_function  # noqa: E402
 from ffl_analysis import count_ffls  # noqa: E402
+from gene_layout_3d import load_result as load_gene_layout_3d  # noqa: E402
 from network_builder import build_network  # noqa: E402
 from viz import (  # noqa: E402
     REGULATOR_COLORS,
+    binding_strength_heatmap,
     ffl_network_figure,
     hub_network_figure,
     hub_network_figure_3d,
+    regulator_gene_figure_3d,
 )
 
 DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "raw", "Connection_Matrix.xlsx")
@@ -38,6 +42,19 @@ def enrichment_df():
     if not os.path.exists(ENRICHMENT_PATH):
         pytest.skip("enrichment_results.csv not cached; run src/enrichment.py first")
     return pd.read_csv(ENRICHMENT_PATH)
+
+
+@pytest.fixture(scope="module")
+def gene_layout_3d(net):
+    result = load_gene_layout_3d()
+    if result is None:
+        pytest.skip("gene_layout_3d.npz not cached; run src/gene_layout_3d.py first")
+    return result
+
+
+@pytest.fixture(scope="module")
+def binding_strength_table():
+    return load_binding_strength_by_function()
 
 
 def test_3d_figure_builds_with_no_focus(net, enrichment_df):
@@ -137,3 +154,59 @@ def test_2d_figure_nodes_colored_per_regulator_not_class(net):
     colors = list(node_trace.marker.color)
     assert len(set(colors)) == len(net.regulator_labels)
     assert colors == [REGULATOR_COLORS[lab] for lab in net.regulator_labels]
+
+
+def test_regulator_gene_figure_3d_builds_with_no_focus(net, gene_layout_3d):
+    fig = regulator_gene_figure_3d(net, gene_layout_3d)
+    fig.to_dict()
+    assert len(fig.data) > 0
+
+
+def test_regulator_gene_figure_3d_builds_with_focus(net, gene_layout_3d):
+    fig = regulator_gene_figure_3d(net, gene_layout_3d, focus_label="PostReg5 NCU08295")
+    fig.to_dict()
+
+
+def test_regulator_gene_figure_3d_plots_every_target_gene(net, gene_layout_3d):
+    """The whole point of this figure: all of net.T's target genes must
+    appear as gene marker points, not just a sample. Excludes the 11
+    per-regulator legend dummy traces (also mode="markers", but size=6,
+    single-point x=[None]) by filtering on the gene markers' fixed size."""
+    fig = regulator_gene_figure_3d(net, gene_layout_3d)
+    gene_markers = [t for t in fig.data if t.mode == "markers" and t.marker.size == 2.5]
+    total_genes = sum(len(t.x) for t in gene_markers)
+    assert total_genes == net.T.shape[1]
+
+
+def test_regulator_gene_figure_3d_scalar_only_marker_fields(net, gene_layout_3d):
+    """Same Scatter3d constraint as the other 3D figures: marker.opacity and
+    marker.line.width must be scalars, not per-point arrays."""
+    fig = regulator_gene_figure_3d(net, gene_layout_3d, focus_label="PostReg5 NCU08295")
+    for trace in fig.data:
+        if trace.type != "scatter3d" or trace.marker is None:
+            continue
+        if trace.marker.opacity is not None:
+            assert isinstance(trace.marker.opacity, (int, float))
+        if trace.marker.line is not None and trace.marker.line.width is not None:
+            assert isinstance(trace.marker.line.width, (int, float))
+
+
+def test_binding_strength_heatmap_builds(net, binding_strength_table):
+    fig = binding_strength_heatmap(net, binding_strength_table)
+    fig.to_dict()
+    heatmap_trace = fig.data[0]
+    assert heatmap_trace.type == "heatmap"
+    assert list(heatmap_trace.x) == list(net.regulator_names)
+    assert list(heatmap_trace.y) == list(binding_strength_table.index)
+
+
+def test_binding_strength_heatmap_zero_maps_to_surface_color(net, binding_strength_table):
+    """The whole point of the custom colorscale: an exact-zero cell must
+    render as the chart surface color, not a pale blue, so true zeros read
+    as blank rather than a low value."""
+    from viz import SURFACE
+
+    fig = binding_strength_heatmap(net, binding_strength_table)
+    colorscale = fig.data[0].colorscale
+    assert colorscale[0][0] == 0.0
+    assert colorscale[0][1] == SURFACE

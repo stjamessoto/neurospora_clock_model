@@ -33,13 +33,23 @@ from null_models import DEFAULT_CACHE_PATH as NULL_CACHE_PATH, load_result as lo
 from enrichment import DEFAULT_OUTPUT_PATH as ENRICHMENT_CACHE_PATH  # noqa: E402
 from viz import (  # noqa: E402
     REGULATOR_COLORS,
+    binding_strength_heatmap,
     degree_distribution_figure,
     ffl_network_figure,
     hub_network_figure,
     hub_network_figure_3d,
     null_distribution_figure,
+    regulator_gene_figure_3d,
 )
 from link_analysis import build_elements, build_styles  # noqa: E402
+from gene_layout_3d import (  # noqa: E402
+    DEFAULT_CACHE_PATH as GENE_LAYOUT_3D_CACHE_PATH,
+    load_result as load_gene_layout_3d,
+)
+from binding_strength import (  # noqa: E402
+    DEFAULT_PATH as BINDING_STRENGTH_PATH,
+    load_binding_strength_by_function,
+)
 from sequence_families import (  # noqa: E402
     DEFAULT_OUTPUT_PATH as FAMILIES_CACHE_PATH,
     EXCLUDED_REGULATORS,
@@ -161,7 +171,16 @@ FILE_BLURBS = {
     ),
     "link_analysis.py": (
         "builds the Cytoscape.js graph (elements + per-regulator color styles) "
-        "for the force-directed Regulators + Genes view."
+        "for the 2D force-directed Regulators + Genes view."
+    ),
+    "gene_layout_3d.py": (
+        "computes and caches a 3D force-directed layout (networkx "
+        "`spring_layout(dim=3)`) for the same graph's 3D view."
+    ),
+    "binding_strength.py": (
+        "loads the user-supplied binding-strength-by-function table and "
+        "explains why its values are joint VTENS/MCMC point estimates, not "
+        "independently testable per-parameter distributions."
     ),
     "sequence_families.py": (
         "parses the UniProt FASTA, finds candidate similar protein pairs via a "
@@ -256,6 +275,18 @@ def _load_link_analysis_styles(_net):
     return build_styles(_net)
 
 
+@st.cache_resource
+def _load_gene_layout_3d():
+    return load_gene_layout_3d()
+
+
+@st.cache_data
+def _load_binding_strength():
+    if not os.path.exists(BINDING_STRENGTH_PATH):
+        return None
+    return load_binding_strength_by_function()
+
+
 net = _load_network()
 cleaning_report = _load_cleaning_report()
 enrichment_df = _load_enrichment()
@@ -265,6 +296,8 @@ stats_result = _load_network_stats(net)
 families_df = _load_gene_families()
 link_elements = _load_link_analysis_elements(net)
 link_node_styles, link_edge_styles = _load_link_analysis_styles(net)
+gene_layout_3d_result = _load_gene_layout_3d()
+binding_strength_df = _load_binding_strength()
 regulator_gene_names = resolve_regulator_gene_names(REGULATOR_INFO)
 
 # ---------------------------------------------------------------------------
@@ -278,10 +311,11 @@ st.caption(
     "**Overview** tab."
 )
 
-tab_overview, tab_matrix, tab_ffl, tab_enrich, tab_viz, tab_families, tab_method = st.tabs(
+tab_overview, tab_matrix, tab_binding, tab_ffl, tab_enrich, tab_viz, tab_families, tab_method = st.tabs(
     [
         "🏠 Overview",
         "📋 Matrix Explorer",
+        "🔬 Binding Strengths",
         "🔁 FFLs & Null Model",
         "🧪 Enrichment Tests",
         "🕸️ Network Viz",
@@ -307,12 +341,13 @@ The paper behind this project — *{PAPER_CITATION}* — used a computationally
 expensive Monte Carlo method (**Variable Topology Ensemble Methods**, fit against
 60,759 mRNA measurements on GPUs over a 61-day run) to reconstruct which of
 **3,380 clock-controlled genes** are regulated by which of **11 regulators**
-downstream of WCC — 5 classic transcription factors (green, in the Network Viz tab)
-and 6 **RNA operons**: post-transcriptional regulators (orange) that control mRNA
-*stability* rather than transcription, per Jack Keene's "RNA operon" hypothesis. The
-paper's central, striking finding was that the largest single regulatory hub in the
-entire network wasn't a transcription factor — it was **lhp-1**, an RNA-binding
-protein, with more target genes than the master regulator WCC itself.
+downstream of WCC — 5 classic transcription factors and 6 **RNA operons**:
+post-transcriptional regulators that control mRNA *stability* rather than
+transcription, per Jack Keene's "RNA operon" hypothesis (each of the 11 gets its
+own color throughout the Network Viz tab). The paper's central, striking finding
+was that the largest single regulatory hub in the entire network wasn't a
+transcription factor — it was **lhp-1**, an RNA-binding protein, with more target
+genes than the master regulator WCC itself.
 
 **What this project adds.** The fitted network is treated here as real input data
 (`data/raw/Connection_Matrix.xlsx`). The paper reported network-motif counts (e.g.
@@ -326,12 +361,18 @@ fewer — target genes than chance?).
 
 **One important caveat, upfront.** The exported connection matrix this app reads
 turns out to cap every target gene at **at most 2** regulators, whereas the paper's
-underlying model allows a gene to be governed by a continuous *mixture* of binding
-strengths across up to all 11 regulators. That single structural difference — a
-binarized/thresholded snapshot rather than the full ensemble — explains essentially
-every place the numbers in this app diverge from the paper's published figures. Every
-such divergence is reported explicitly rather than adjusted away; see the
-**Methodology & Paper Comparison** tab for the full accounting.
+underlying model (**Variable Topology Ensemble Methods**, VTENS) fits a continuous
+binding strength for every regulator against every candidate target, with topology
+and kinetics estimated **jointly** by MCMC under a "supernet" formulation — each
+accepted sample is one whole candidate network, not an independent draw per
+(regulator, target) pair. `Connection_Matrix.xlsx` is a thresholded snapshot of that
+joint fit (the dominant regulator(s) per gene), not the full multi-way estimate. That
+single structural difference explains essentially every place the numbers in this
+app diverge from the paper's published figures. Every such divergence is reported
+explicitly rather than adjusted away — see the **🔬 Binding Strengths** tab for a
+real (function-level) slice of the underlying continuous estimates and exactly what
+they do and don't support, and the **Methodology & Paper Comparison** tab for the
+full accounting.
 """
     )
 
@@ -340,15 +381,20 @@ such divergence is reported explicitly rather than adjusted away; see the
         """
 1. **📋 Matrix Explorer** — browse the cleaned data itself: which genes each
    regulator targets, and a lookup for any individual gene.
-2. **🔁 FFLs & Null Model** — a specific 3-gene network pattern (the feedforward
+2. **🔬 Binding Strengths** — a real slice of the paper's continuous, jointly-fit
+   binding strengths (function-level, not gene-level), and why they aren't the same
+   thing as per-parameter statistical significance.
+3. **🔁 FFLs & Null Model** — a specific 3-gene network pattern (the feedforward
    loop) and whether it shows up more than random chance would predict.
-3. **🧪 Enrichment Tests** — do pairs/triples of regulators share more (or fewer)
+4. **🧪 Enrichment Tests** — do pairs/triples of regulators share more (or fewer)
    target genes than chance? A filterable results table.
-4. **🕸️ Network Viz** — an interactive diagram of the whole network, in 2D or a
-   rotatable 3D; click through regulators to see their role and relationships.
-5. **🧬 Gene Families** — which clock-network genes have close relatives elsewhere
+5. **🕸️ Network Viz** — interactive diagrams of the whole network — hub structure,
+   every regulator plus all 3,026 target genes (2D or 3D, each regulator its own
+   color), and the feedforward-loop network — click through to see roles and
+   relationships.
+6. **🧬 Gene Families** — which clock-network genes have close relatives elsewhere
    in the genome, based on real protein sequence data.
-6. **📖 Methodology & Paper Comparison** — the technical detail: every number here
+7. **📖 Methodology & Paper Comparison** — the technical detail: every number here
    side-by-side with the paper's, why they differ, and a glossary of every term
    used in this app.
 """
@@ -453,6 +499,60 @@ cleaning step against the raw file.
     st.markdown("**Full cleaned T matrix (regulator x target gene, binary)**")
     st.caption("Rows = regulators, columns = target genes, 1 = regulated. Scroll to explore.")
     st.dataframe(net.T, width="stretch", height=350)
+
+# ---------------------------------------------------------------------------
+# Tab: binding strength by function (user-supplied continuous data)
+# ---------------------------------------------------------------------------
+
+with tab_binding:
+    st.subheader("Binding strength by function")
+    with st.expander("ℹ️ What is this, and what it is *not*", expanded=True):
+        st.markdown(
+            f"""
+A separate, user-supplied table (`data/raw/binding_strength_by_function.csv`):
+21 KEGG/GO functional categories (ribosome, proteasome, carbon metabolism,
+etc.) x the same 11 regulators, with a continuous value in each cell instead
+of the binary 0/1 of the Matrix Explorer tab.
+
+**What these numbers are not — read this before drawing any conclusion from
+them.** It's tempting to read a `0.0000` cell as "this regulator's ensemble
+distribution for this function excluded zero" and a positive cell as
+"included it" — that would be a real statistical claim. **It is not what
+this table supports.** The paper's Variable Topology Ensemble Method
+(VTENS) does not fit each regulator-function binding strength as an
+independent parameter with its own marginal posterior, later tested against
+zero. Under VTENS's "supernet" formulation, every regulator is initially
+allowed to regulate every candidate function, and the network *topology*
+and its *kinetic parameters* are estimated **jointly** by MCMC — each
+accepted sample is one entire candidate network consistent with the
+underlying mRNA time-course data, not a draw from 231 independent
+per-(function, regulator) distributions. The values below are that joint
+ensemble's point estimates (the same estimates used to pick the dominant
+regulator for each function/gene and build `Connection_Matrix.xlsx` in the
+first place) — not the result of, and not re-derivable into, per-cell
+hypothesis tests. A blank/zero cell means "not the estimated dominant
+regulator for this function," full stop.
+"""
+        )
+
+    if binding_strength_df is None:
+        st.info(f"Binding-strength table not found at `{BINDING_STRENGTH_PATH}`.")
+    else:
+        st.plotly_chart(binding_strength_heatmap(net, binding_strength_df), width="stretch")
+
+        st.divider()
+        st.markdown("**Full table**")
+        display_df = binding_strength_df.copy()
+        display_df.columns = net.regulator_names
+        st.dataframe(
+            display_df,
+            width="stretch",
+            height=350,
+            column_config={
+                name: st.column_config.NumberColumn(name, format="%.4f")
+                for name in display_df.columns
+            },
+        )
 
 # ---------------------------------------------------------------------------
 # Tab: FFL results + null model
@@ -755,9 +855,21 @@ depleted relationships.
 
     with subtab_genes:
         st.subheader(f"All {net.T.shape[1]:,} target genes, hung off their regulators")
-        with st.expander("ℹ️ How to read this diagram", expanded=True):
-            st.markdown(
-                """
+
+        genes_view_mode = st.segmented_control(
+            "Diagram view",
+            options=["2D", "3D"],
+            default="2D",
+            key="genes_view_mode",
+            help="Same graph, same per-regulator colors, either engine: 2D uses Cytoscape.js's "
+                 "fcose in the browser, 3D uses a precomputed networkx force-directed layout.",
+        )
+        genes_view_mode = genes_view_mode or "2D"
+
+        if genes_view_mode == "2D":
+            with st.expander("ℹ️ How to read this diagram", expanded=True):
+                st.markdown(
+                    """
 Every one of this project's 3,026 target genes plotted as its own point,
 each connected by an edge to the regulator(s) that target it — laid out by
 Cytoscape.js's **fcose** force-directed algorithm rather than a fixed ring,
@@ -779,24 +891,76 @@ export of the graph.
 target-shaped **"Fit to Screen"** icon in the top-right toolbar once — the
 component doesn't always auto-fit its very first render to the full width.
 """
+                )
+
+            st_link_analysis(
+                link_elements,
+                # wider than fcose's defaults (nodeRepulsion=4500, idealEdgeLength=50) --
+                # at the default spacing, regulator hubs and their gene clusters sit too
+                # close together to see individual edges between them.
+                layout={
+                    "name": "fcose",
+                    "padding": 20,
+                    "animationDuration": 500,
+                    "fit": True,
+                    "animate": True,
+                    "nodeDimensionsIncludeLabels": True,
+                    "nodeRepulsion": 12000,
+                    "idealEdgeLength": 120,
+                },
+                node_styles=link_node_styles,
+                edge_styles=link_edge_styles,
+                height=750,
+                key="regulator_gene_link_analysis",
             )
 
-        st_link_analysis(
-            link_elements,
-            layout="fcose",
-            node_styles=link_node_styles,
-            edge_styles=link_edge_styles,
-            height=750,
-            key="regulator_gene_link_analysis",
-        )
-
-        legend_cols = st.columns(6)
-        for i, lab in enumerate(net.regulator_labels):
-            with legend_cols[i % 6]:
-                color = REGULATOR_COLORS[lab]
+            legend_cols = st.columns(6)
+            for i, lab in enumerate(net.regulator_labels):
+                with legend_cols[i % 6]:
+                    color = REGULATOR_COLORS[lab]
+                    st.markdown(
+                        f"<span style='color:{color}'>&#9679;</span> {net.regulator_names[i]}",
+                        unsafe_allow_html=True,
+                    )
+        else:
+            with st.expander("ℹ️ How to read this diagram", expanded=True):
                 st.markdown(
-                    f"<span style='color:{color}'>&#9679;</span> {net.regulator_names[i]}",
-                    unsafe_allow_html=True,
+                    """
+The same regulator + gene graph as the 2D view, laid out in true 3D instead:
+positions come from **networkx's `spring_layout(dim=3)`**, a real
+force-directed physics simulation (not the fixed-ring layout the Hub
+structure subtab uses) — the same idea as the 2D fcose graph, computed by a
+different engine and precomputed/cached rather than run live in the browser
+(it takes ~45s for this graph's 3,037 nodes).
+
+Same per-regulator coloring as everywhere else in this tab. With ~3,026
+gene points on screen, use **"Focus on a regulator"** below to isolate one
+hub's genes at full opacity and fade the rest. Drag to rotate, scroll to
+zoom.
+"""
+                )
+
+            if gene_layout_3d_result is None:
+                st.info(
+                    f"3D layout not yet cached at `{GENE_LAYOUT_3D_CACHE_PATH}`. Run "
+                    f"`python src/gene_layout_3d.py` (~45s) to generate it — that's "
+                    f"{file_ref('gene_layout_3d.py')}."
+                )
+            else:
+                focus_choice_genes_3d = st.selectbox(
+                    "Focus on a regulator",
+                    options=["Show all regulators"] + net.regulator_names,
+                    index=0,
+                    key="genes_3d_focus",
+                    help="Isolate this regulator's target genes at full opacity; fade everything else.",
+                )
+                focus_label_genes_3d = None
+                if focus_choice_genes_3d != "Show all regulators":
+                    focus_label_genes_3d = net.regulator_labels[net.regulator_names.index(focus_choice_genes_3d)]
+
+                st.plotly_chart(
+                    regulator_gene_figure_3d(net, gene_layout_3d_result, focus_label=focus_label_genes_3d),
+                    width="stretch",
                 )
 
     with subtab_ffl:
@@ -1095,6 +1259,9 @@ and {file_ref('ffl_analysis.py')}:
   against each other row (explicitly stated in Section V-F).
 - The degree-distribution / hub-size / singly-vs-multiply-regulated comparisons
   (Section V-E), computed by {file_ref('network_stats.py')}.
+- The function-level continuous binding-strength table (Binding Strengths tab) is
+  the paper's own joint VTENS/MCMC point estimates, transcribed as supplied —
+  {file_ref('binding_strength.py')}.
 
 **Novel in this project (the paper never computed these):**
 - A degree-preserving double-edge-swap null model giving an empirical Z-score and
@@ -1104,10 +1271,13 @@ and {file_ref('ffl_analysis.py')}:
   FDR corrected at α = 0.05 — {file_ref('enrichment.py')}.
 - Sequence-based paralog gene families from real protein sequence data —
   {file_ref('sequence_families.py')}.
+- Force-directed layouts of every regulator plus all 3,026 target genes — the
+  paper's own Figure 1A is a fixed hub-and-spoke — in 2D via Cytoscape.js
+  ({file_ref('link_analysis.py')}) and true 3D via networkx
+  ({file_ref('gene_layout_3d.py')}).
 
-All charts in every tab of this app (the hub diagram, degree-distribution plot, and
-null-model histogram) are built by {file_ref('viz.py')}, shared across tabs so the
-same colors and layout logic are used everywhere.
+All charts in every tab of this app are built by {file_ref('viz.py')}, shared
+across tabs so the same colors and layout logic are used everywhere.
 """
     )
 
@@ -1133,15 +1303,20 @@ same colors and layout logic are used everywhere.
     st.markdown(
         """
 Every gene in this exported matrix is regulated by **at most 2** of the 11
-regulators. The paper's model assigns each target gene a continuous *binding
-strength* per regulator (its Table 1; strengths across regulators sum to 1 per
-gene, sampled via MCMC over the full ensemble). `Connection_Matrix.xlsx` looks
-like a thresholded/binarized snapshot of that ensemble (e.g. top-1 or top-2
-dominant regulator per gene) rather than the full multi-way soft assignment. That
-single structural fact explains essentially every downstream divergence above: a
-lower total FFL count, zero genes with overlapping FFLs, and — for the enrichment
-tests — every significant result being a *depletion* (any two regulators' target
-sets are pushed toward mutual exclusivity purely as a side effect of the
+regulators. The paper's underlying model (VTENS) doesn't fit each gene a set of
+11 independent per-regulator binding strengths tested one at a time — under its
+"supernet" formulation, every regulator is initially allowed to regulate every
+candidate target, and the network *topology* and its *kinetic parameters* are
+estimated **jointly** by MCMC: each accepted sample is one entire candidate
+network consistent with the mRNA time-course data, not 11 independent draws per
+gene. `Connection_Matrix.xlsx` is a thresholded snapshot of that joint fit (the
+dominant regulator(s) per gene) rather than the full multi-way estimate — see the
+**🔬 Binding Strengths** tab for a real (function-level) look at what the
+continuous estimates look like and what they don't support. That single
+structural fact explains essentially every downstream divergence above: a lower
+total FFL count, zero genes with overlapping FFLs, and — for the enrichment tests
+— every significant result being a *depletion* (any two regulators' target sets
+are pushed toward mutual exclusivity purely as a side effect of the
 binarization, not necessarily real biological antagonism).
 
 This is flagged rather than silently reconciled: report discrepancies, don't force

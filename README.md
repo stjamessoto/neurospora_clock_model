@@ -22,8 +22,9 @@ coli").
 
 **Done:** `src/data_loader.py`, `src/network_builder.py`, `src/ffl_analysis.py`,
 `src/null_models.py`, `src/enrichment.py`, `src/network_stats.py`, `src/viz.py`,
-`src/sequence_families.py`, `app/streamlit_app.py`, `tests/test_ffl_count.py` +
-`tests/test_sequence_families.py` (28 tests, passing).
+`src/sequence_families.py`, `src/link_analysis.py`, `src/gene_layout_3d.py`,
+`src/binding_strength.py`, `app/streamlit_app.py`, plus the full `tests/` suite
+(47 tests, passing).
 
 **Not yet built:** exploration notebook.
 
@@ -65,17 +66,41 @@ found, run directly against the file rather than assumed:
 | Top FFL-contributing regulator | lhp-1 (39 combined w/ NCU06108) | lhp-1 (9, single largest) | Same qualitative pattern, different magnitude |
 
 **Root cause of the divergence (not a bug):** every gene in this exported matrix is
-regulated by **at most 2** of the 11 regulators. The paper's model assigns each target
-gene a continuous *binding strength* per regulator (Table 1; strengths across
-regulators sum to 1 per gene, with Monte Carlo sampling over the full ensemble). This
-`Connection_Matrix.xlsx` export looks like a thresholded/binarized snapshot of that
-ensemble (e.g. top-1 or top-2 dominant regulator per gene) rather than the full
-multi-way soft assignment. That single structural fact explains essentially every
-downstream mismatch: fewer multiply-regulated genes, zero genes with 2+ *additional*
-regulators beyond WCC (required for an "overlapping FFL"), and a lower total FFL count.
+regulated by **at most 2** of the 11 regulators. The paper's underlying model
+(**Variable Topology Ensemble Methods**, VTENS) does not fit each gene 11
+independent per-regulator binding strengths, later tested one at a time. Under
+VTENS's "supernet" formulation, every regulator is initially allowed to regulate
+every candidate target, and the network *topology* and its *kinetic parameters*
+are estimated **jointly** by MCMC — each accepted sample is one entire candidate
+network consistent with the mRNA time-course data, not 11 independent draws per
+gene. `Connection_Matrix.xlsx` is a thresholded snapshot of that joint fit (the
+dominant regulator(s) per gene), not the full multi-way estimate. **The reported
+binding strengths are therefore joint ensemble point estimates, not independent
+per-parameter distributions — there is no marginal "does the ensemble exclude
+zero" test to run on them**, and `data/raw/binding_strength_by_function.csv` /
+the app's Binding Strengths tab exist specifically to show a real slice of these
+continuous estimates without implying otherwise. That single structural fact
+explains essentially every downstream mismatch: fewer multiply-regulated genes,
+zero genes with 2+ *additional* regulators beyond WCC (required for an
+"overlapping FFL"), and a lower total FFL count.
 
 This is flagged rather than silently reconciled, per the project's guiding principle:
 report discrepancies, don't force numbers to match.
+
+## Novel extension: binding strength by function (`src/binding_strength.py`)
+
+A second user-supplied file, `data/raw/binding_strength_by_function.csv`
+(transcribed from the paper's own supplementary binding-strength table), gives a
+real, continuous, function-level look at the joint VTENS/MCMC estimates
+`Connection_Matrix.xlsx` was thresholded from: 21 KEGG/GO functional categories
+(ribosome, proteasome, carbon metabolism, ...) x the same 11 regulators. The
+Binding Strengths tab renders it as a heatmap (sequential blue for magnitude;
+exact-zero cells render as blank surface, not pale blue, since there's a real gap
+in this data between 0 and the smallest observed positive strength) plus the raw
+table, with the module docstring and in-app copy both spelling out explicitly why
+a `0.0000` cell means "not the estimated dominant regulator for this function" and
+**not** "this regulator's ensemble distribution excluded zero" — that's not a
+claim this data supports.
 
 ## Novel extension: is the FFL count actually significant?
 
@@ -212,40 +237,57 @@ poorer sample (this export's per-gene degree only takes values `{1, 2}`, vs. the
 paper's up to 11), so treat the exponent as illustrative rather than a robust
 independent confirmation.
 
-## Visualization (`src/viz.py`) and the Streamlit app (`app/streamlit_app.py`)
+## Visualization (`src/viz.py`, `src/link_analysis.py`, `src/gene_layout_3d.py`) and the Streamlit app (`app/streamlit_app.py`)
 
-`viz.py` builds three Plotly figures — reused identically by the CLI scripts and the
-app — using a fixed, colorblind-validated palette (categorical hues by regulator
-class; the blue↔red diverging pair for enriched/depleted; one sequential blue hue for
-magnitude/fit lines):
-- A WCC-centered hub-and-spoke diagram (paper Fig. 1A layout): gray spokes are the
-  fixed WCC→regulator structure; colored chords mark pairwise enrichment (blue) or
-  depletion (red) significant at an adjustable q-value threshold. `hub_network_figure`
-  takes `q_threshold`, `show_enriched`/`show_depleted`, and `focus_label` params so the
-  app can re-filter and highlight interactively without recomputing any statistics
-  (a BH-adjusted q-value already *is* "significant at any alpha", so re-thresholding
-  is just `q_value <= new_threshold` — no re-correction needed).
+`viz.py` builds the Plotly figures — reused identically by the CLI scripts and the
+app — using a fixed, colorblind-validated palette: **`REGULATOR_COLORS`**, one
+distinct hue per regulator (11 total, extending the base 8-slot categorical palette
+with 3 more hues chosen for CVD separation), used consistently everywhere a
+regulator is drawn; plus the blue↔red diverging pair for enriched/depleted, and one
+sequential blue hue for magnitude/fit lines and the binding-strength heatmap:
+- A WCC-centered hub-and-spoke diagram (paper Fig. 1A layout, 2D or 3D): gray spokes
+  are the fixed WCC→regulator structure; colored chords mark pairwise enrichment
+  (blue) or depletion (red) significant at an adjustable q-value threshold.
+  `hub_network_figure`/`hub_network_figure_3d` take `q_threshold`,
+  `show_enriched`/`show_depleted`, and `focus_label` params so the app can re-filter
+  and highlight interactively without recomputing any statistics (a BH-adjusted
+  q-value already *is* "significant at any alpha", so re-thresholding is just
+  `q_value <= new_threshold` — no re-correction needed).
+- **Regulators + all 3,026 target genes**, force-directed, in two engines: a 2D graph
+  via Cytoscape.js's `fcose` layout (`link_analysis.py` builds the elements/styles,
+  rendered by the `st_link_analysis` component — click a node to highlight its
+  neighbors, built into the component), and a true 3D layout via networkx's
+  `spring_layout(dim=3)` (`gene_layout_3d.py`, precomputed/cached since it takes ~45s
+  for this graph, rendered by `viz.regulator_gene_figure_3d`). Same per-regulator
+  coloring in both.
+- A feedforward-loop network diagram (`ffl_network_figure`) — the same FFL count from
+  the FFLs & Null Model tab, laid out as the actual WCC→B→C / WCC→C loops it's
+  counting.
 - The log-log degree-distribution plot with the fitted exponent vs. the paper's −1.4.
 - The null-model FFL-count histogram with the observed value marked.
+- A binding-strength-by-function heatmap (`binding_strength_heatmap`) — sequential
+  blue for magnitude, exact zeros rendered as blank surface.
 
-`app/streamlit_app.py` is a 7-tab dashboard — **Overview**, Matrix Explorer, FFLs &
-Null Model, Enrichment Tests, Network Viz, Gene Families, Methodology & Paper
-Comparison — with the tabs immediately below the title (no long blurb blocking them)
-and every tab written for someone who hasn't read the paper:
+`app/streamlit_app.py` is an 8-tab dashboard — **Overview**, Matrix Explorer,
+Binding Strengths, FFLs & Null Model, Enrichment Tests, Network Viz, Gene Families,
+Methodology & Paper Comparison — with the tabs immediately below the title (no long
+blurb blocking them) and every tab written for someone who hasn't read the paper:
 - **Overview** carries the explanatory blurb (what the clock network is, what the
-  paper found, what this project adds, the binarized-export caveat) plus a "how to
-  use this app" walkthrough and a glossary (regulator, RNA operon, FFL, null model,
-  Z-score, hypergeometric test, q-value, enriched/depleted) covering every term used
-  elsewhere in the app.
+  paper found, what this project adds, the binarized-export caveat, and the joint
+  VTENS/MCMC framing behind it) plus a "how to use this app" walkthrough and a
+  glossary (regulator, RNA operon, FFL, null model, Z-score, hypergeometric test,
+  q-value, enriched/depleted) covering every term used elsewhere in the app.
 - **Matrix Explorer**'s gene lookup is a searchable dropdown (type to filter by NCU
   ID) rather than free text, so an unfamiliar user can't mistype a gene ID into a dead
   end.
-- **Network Viz** is interactive: a "Focus on a regulator" dropdown highlights that
-  node and fades everything else, then shows a paper-sourced description of that
-  regulator (`REGULATOR_BLURBS`, drawn from Sections V-B/V-C/V-F), its hub size, its
-  FFL contribution, and a live-filtered table of its significant relationships. A
-  significance-threshold select-slider and enriched/depleted checkboxes let a user
-  loosen or tighten what counts as a "significant" chord and watch the diagram update.
+- **Binding Strengths** opens with an explicit "what this is *not*" callout: these are
+  joint ensemble point estimates, not independent per-parameter distributions, and a
+  zero cell is not the result of an ensemble-excludes-zero test.
+- **Network Viz** has three subtabs — **Hub structure** (the 2D/3D toggle above, with
+  a "Focus on a regulator" dropdown showing a paper-sourced description
+  (`REGULATOR_BLURBS`, drawn from Sections V-B/V-C/V-F), hub size, FFL contribution,
+  and significant relationships), **Regulators + Genes** (the force-directed 2D/3D
+  graph above), and **FFL Network** (the loop diagram above).
 - **Gene Families** shows the regulator ID-resolution table (resolved/aliased/
   unresolved, with reasons), the overall family-size distribution, every k=3/k=4
   family found with a "touches the clock network" marker, a browsable table of every
@@ -254,9 +296,10 @@ and every tab written for someone who hasn't read the paper:
   what to look for, so no tab assumes prior context from another one.
 
 It reads the cached results (`data/processed/null_model_results.npz`,
-`data/processed/enrichment_results.csv`, `data/processed/gene_families.csv`) rather
-than recomputing them live, since the null model alone takes ~8-9 minutes and the
-gene-family pipeline ~3 minutes. Run it with:
+`data/processed/enrichment_results.csv`, `data/processed/gene_families.csv`,
+`data/processed/gene_layout_3d.npz`) rather than recomputing them live, since the
+null model alone takes ~8-9 minutes, the gene-family pipeline ~3 minutes, and the 3D
+layout ~45s. Run it with:
 
 ```
 streamlit run app/streamlit_app.py
@@ -269,9 +312,10 @@ figures (background `#fcfcfb`, primary accent `#2a78d6`).
 
 - **Reproduced from the paper**: R/T matrix construction (Section III, "the regulatory
   CCG proteins do not regulate each other"), the FFL-counting formula via the Hadamard
-  product `(R @ T) * T` (Section V-F), and the per-regulator "B-gene" breakdown via
+  product `(R @ T) * T` (Section V-F), the per-regulator "B-gene" breakdown via
   inner products of the WCC row of T against each other row (explicitly stated in
-  Section V-F).
+  Section V-F), and the function-level binding-strength table (the paper's own joint
+  VTENS/MCMC point estimates, transcribed as supplied).
 - **Novel extension**: a degree-preserving double-edge-swap null model giving an
   empirical Z-score/p-value for the FFL count (`null_models.py`); exact
   hypergeometric pairwise and convolved-hypergeometric triple-wise regulator
@@ -295,8 +339,9 @@ neurospora_clock_model/
 ├── data/
 │   ├── raw/
 │   │   ├── Connection_Matrix.xlsx
+│   │   ├── binding_strength_by_function.csv
 │   │   └── uniprotkb_proteome_UP000001805_2026_07_02.fasta
-│   └── processed/             # cached null-model, enrichment, and gene-family results (app reads these)
+│   └── processed/             # cached null-model, enrichment, gene-family, 3D-layout results (app reads these)
 ├── src/
 │   ├── data_loader.py         # done
 │   ├── network_builder.py     # done
@@ -305,10 +350,15 @@ neurospora_clock_model/
 │   ├── enrichment.py          # done
 │   ├── network_stats.py       # done
 │   ├── viz.py                 # done
+│   ├── link_analysis.py       # done
+│   ├── gene_layout_3d.py      # done
+│   ├── binding_strength.py    # done
 │   └── sequence_families.py   # done
 ├── app/streamlit_app.py       # done
-├── tests/                     # done (28 tests)
+├── tests/                     # done (47 tests)
 │   ├── test_ffl_count.py
+│   ├── test_viz.py
+│   ├── test_link_analysis.py
 │   └── test_sequence_families.py
 └── notebooks/
 ```
@@ -324,6 +374,8 @@ python src/network_stats.py     # degree distribution, hub sizes, power-law fit
 python src/null_models.py       # degree-preserving null model (~8-9 min, 1000 iterations); caches to data/processed/
 python src/enrichment.py        # pairwise/triple enrichment + BH-FDR (~45s); caches to data/processed/
 python src/sequence_families.py # sequence-based paralog families (~3 min); caches to data/processed/
+python src/gene_layout_3d.py    # 3D force-directed regulator+gene layout (~45s); caches to data/processed/
+python src/binding_strength.py  # binding-strength-by-function table, printed to stdout (no cache needed)
 python -m pytest tests/ -v      # test suite (~50s)
 streamlit run app/streamlit_app.py   # interactive dashboard (reads the cached results above)
 ```

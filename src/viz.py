@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
+from gene_layout_3d import GeneLayout3DResult
 from network_builder import REGULATOR_ORDER, ClockNetwork
 from network_stats import PAPER_POWER_LAW_EXPONENT, NetworkStatsResult
 from null_models import NullModelResult
@@ -51,6 +52,7 @@ REGULATOR_COLORS = dict(zip(REGULATOR_ORDER, [
     "#39c6c6",  # PostReg9 NCU00919 (rok-1) -- cyan
     "#c825d0",  # PostReg10 NCU09349 (has-1) -- magenta-purple
 ]))
+GENE_MULTI_COLOR = INK_MUTED  # genes with 2 regulators -- no single hub color applies
 
 _AXIS_STYLE = dict(gridcolor=GRIDLINE, linecolor=BASELINE, tickfont=dict(color=INK_MUTED))
 
@@ -554,6 +556,136 @@ def ffl_network_figure(net: ClockNetwork, ffl_result, focus_label: str | None = 
     return fig
 
 
+def regulator_gene_figure_3d(
+    net: ClockNetwork,
+    layout: GeneLayout3DResult,
+    focus_label: str | None = None,
+) -> go.Figure:
+    """3D counterpart to the 2D Cytoscape.js force-directed Regulators +
+    Genes graph in the same subtab: same graph, same per-regulator colors
+    (``REGULATOR_COLORS``), but positions come from
+    ``gene_layout_3d.compute_layout`` -- a real 3D force-directed layout
+    (networkx's ``spring_layout(dim=3)``, precomputed and cached, ~45s to
+    (re)compute) rather than Cytoscape's client-side "fcose". The physics
+    itself pulls each regulator's exclusive genes into their own cluster
+    purely from shared-edge attraction, the same way the 2D view does.
+
+    ``focus_label`` isolates one regulator's genes at full opacity and
+    fades the rest -- Plotly has no built-in click-to-focus the way the
+    Cytoscape component does, so this is a manual dropdown instead.
+    """
+    pos_by_id = {nid: layout.positions[i] for i, nid in enumerate(layout.node_ids)}
+    labels = net.regulator_labels
+    names = net.regulator_names
+    hub_sizes = net.T.sum(axis=1)
+
+    reg_pos = {lab: pos_by_id[f"reg::{lab}"] for lab in labels}
+    gene_regs = {gene: list(net.T.index[net.T[gene].astype(bool)]) for gene in net.T.columns}
+
+    focus_is_set = focus_label is not None and focus_label in labels
+    fig = go.Figure()
+
+    # regulator -> gene edges, one trace per regulator for focus dimming
+    for lab in labels:
+        genes = [g for g, regs in gene_regs.items() if lab in regs]
+        if not genes:
+            continue
+        rx, ry, rz = reg_pos[lab]
+        xs, ys, zs = [], [], []
+        for gene in genes:
+            gx, gy, gz = pos_by_id[f"gene::{gene}"]
+            xs += [rx, gx, None]
+            ys += [ry, gy, None]
+            zs += [rz, gz, None]
+        touches_focus = focus_is_set and lab == focus_label
+        opacity = (1.0 if touches_focus else 0.03) if focus_is_set else 0.15
+        fig.add_trace(go.Scatter3d(
+            x=xs, y=ys, z=zs, mode="lines",
+            line=dict(color=REGULATOR_COLORS[lab], width=1),
+            opacity=opacity, hoverinfo="skip", showlegend=False,
+        ))
+
+    # gene markers, grouped by single regulator (colored to match) vs. multi (neutral)
+    marker_groups: dict[str, list[str]] = {}
+    for gene, regs in gene_regs.items():
+        key = regs[0] if len(regs) == 1 else "__multi__"
+        marker_groups.setdefault(key, []).append(gene)
+
+    for key, genes in marker_groups.items():
+        color = GENE_MULTI_COLOR if key == "__multi__" else REGULATOR_COLORS[key]
+        touches_focus = focus_is_set and key == focus_label
+        opacity = (0.85 if touches_focus else 0.05) if focus_is_set else 0.55
+        xs = [pos_by_id[f"gene::{g}"][0] for g in genes]
+        ys = [pos_by_id[f"gene::{g}"][1] for g in genes]
+        zs = [pos_by_id[f"gene::{g}"][2] for g in genes]
+        fig.add_trace(go.Scatter3d(
+            x=xs, y=ys, z=zs, mode="markers",
+            marker=dict(size=2.5, color=color, opacity=opacity),
+            hoverinfo="text",
+            hovertext=[f"{g}<br>regulated by: {', '.join(gene_regs[g])}" for g in genes],
+            showlegend=False,
+        ))
+
+    # regulator nodes
+    max_hub = hub_sizes.max()
+
+    def node_size(lab: str) -> float:
+        base = 10 + 20 * (hub_sizes.loc[lab] / max_hub)
+        return base + 8 if focus_is_set and lab == focus_label else base
+
+    if focus_is_set:
+        focus_labs = [focus_label]
+        wcc_labs = [l for l in labels if l == "Wcc" and l != focus_label]
+        dim_labs = [l for l in labels if l not in focus_labs and l not in wcc_labs]
+        node_groups = [(focus_labs, 1.0, 3.0), (wcc_labs, 1.0, 1.5), (dim_labs, 0.3, 1.0)]
+    else:
+        node_groups = [(labels, 1.0, 1.5)]
+
+    for labs, opacity, line_width in node_groups:
+        if not labs:
+            continue
+        fig.add_trace(go.Scatter3d(
+            x=[reg_pos[l][0] for l in labs], y=[reg_pos[l][1] for l in labs], z=[reg_pos[l][2] for l in labs],
+            mode="markers+text",
+            marker=dict(
+                size=[node_size(l) for l in labs],
+                color=[REGULATOR_COLORS[l] for l in labs],
+                opacity=opacity,
+                line=dict(width=line_width, color=SURFACE),
+            ),
+            text=[names[labels.index(l)] for l in labs], textposition="top center",
+            textfont=dict(color=INK_PRIMARY, size=11),
+            hoverinfo="text",
+            hovertext=[
+                f"{names[labels.index(l)]} ({l})<br>{int(hub_sizes.loc[l])} targets" for l in labs
+            ],
+            showlegend=False,
+        ))
+
+    # dummy traces for a clean per-regulator legend
+    for lab in labels:
+        fig.add_trace(go.Scatter3d(
+            x=[None], y=[None], z=[None], mode="markers",
+            marker=dict(size=6, color=REGULATOR_COLORS[lab]), name=names[labels.index(lab)],
+        ))
+
+    title = f"Regulators + all {len(gene_regs):,} target genes (3D force-directed — drag to rotate, scroll to zoom)"
+    if focus_is_set:
+        title += f" — focused on {names[labels.index(focus_label)]}"
+
+    axis_kwargs = dict(visible=False, showbackground=False, showgrid=False, zeroline=False)
+    fig.update_layout(
+        title=title,
+        scene=dict(xaxis=axis_kwargs, yaxis=axis_kwargs, zaxis=axis_kwargs, bgcolor=SURFACE),
+        height=700,
+        paper_bgcolor=SURFACE,
+        font=dict(color=INK_SECONDARY),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.05),
+        margin=dict(l=0, r=0, t=40, b=0),
+    )
+    return fig
+
+
 def degree_distribution_figure(result: NetworkStatsResult) -> go.Figure:
     """Log-log degree-value frequency plot with the fitted power law overlaid.
 
@@ -625,5 +757,55 @@ def null_distribution_figure(null_result: NullModelResult) -> go.Figure:
         plot_bgcolor=SURFACE,
         paper_bgcolor=SURFACE,
         font=dict(color=INK_SECONDARY),
+    )
+    return fig
+
+
+def binding_strength_heatmap(net: ClockNetwork, table: pd.DataFrame) -> go.Figure:
+    """Heatmap of the function x regulator binding-strength table (joint
+    VTENS/MCMC point estimates, from ``binding_strength.py`` -- see that
+    module's docstring for why these are joint estimates, not independent
+    per-parameter distributions, and shouldn't be read as the result of a
+    "does the ensemble exclude zero" test).
+
+    Sequential blue (magnitude) encodes strength; a cell of exactly 0.0
+    ("not the estimated dominant regulator for this function") renders as
+    blank chart surface rather than a pale blue, so true zeros read as an
+    absence, not a low value -- there's a real gap in this table between 0
+    and the smallest observed positive strength (~0.36), so this is a
+    faithful cutoff, not a rounding trick.
+    """
+    z = table.values
+    zmax = float(z.max())
+    eps = 0.06  # position fraction below which cells render as blank surface
+
+    colorscale = [
+        [0.0, SURFACE],
+        [eps, SURFACE],
+        [eps, "#cde2fb"],
+        [0.4, "#5598e7"],
+        [0.7, BLUE],
+        [1.0, "#0d366b"],
+    ]
+
+    fig = go.Figure(go.Heatmap(
+        z=z,
+        x=list(net.regulator_names),
+        y=list(table.index),
+        colorscale=colorscale,
+        zmin=0, zmax=zmax,
+        xgap=2, ygap=2,
+        colorbar=dict(title="binding<br>strength", tickfont=dict(color=INK_MUTED)),
+        hovertemplate="%{y} × %{x}<br>binding strength: %{z:.3f}<extra></extra>",
+    ))
+    fig.update_layout(
+        title="Binding strength by function (blank = not the estimated dominant regulator)",
+        xaxis=dict(side="top", tickangle=-45, **_AXIS_STYLE),
+        yaxis=dict(autorange="reversed", **_AXIS_STYLE),
+        height=650,
+        plot_bgcolor=SURFACE,
+        paper_bgcolor=SURFACE,
+        font=dict(color=INK_SECONDARY),
+        margin=dict(l=220, t=140),
     )
     return fig
