@@ -23,10 +23,12 @@ coli").
 **Done:** `src/data_loader.py`, `src/network_builder.py`, `src/ffl_analysis.py`,
 `src/null_models.py`, `src/enrichment.py`, `src/network_stats.py`, `src/viz.py`,
 `src/sequence_families.py`, `src/link_analysis.py`, `src/gene_layout_3d.py`,
-`src/binding_strength.py`, `app/streamlit_app.py`, plus the full `tests/` suite
-(47 tests, passing).
+`src/binding_strength.py`, `src/mutheta_loader.py`, `app/streamlit_app.py`, plus the
+full `tests/` suite (72 tests, passing).
 
-**Not yet built:** exploration notebook.
+**Not yet built:** exploration notebook. **Blocked on external data:** interpreting
+`data/raw/MuThetaDataSim_m4.txt` (gene/sample identifiers pending from the data
+source — see "Pending: simulated Mu/Theta dataset" below).
 
 ## Data cleaning findings (`src/data_loader.py`)
 
@@ -101,6 +103,37 @@ table, with the module docstring and in-app copy both spelling out explicitly wh
 a `0.0000` cell means "not the estimated dominant regulator for this function" and
 **not** "this regulator's ensemble distribution excluded zero" — that's not a
 claim this data supports.
+
+## Pending: simulated Mu/Theta dataset (`src/mutheta_loader.py`)
+
+A third user-supplied file, `data/raw/MuThetaDataSim_m4.txt`, has been added and
+parsed but is **not yet interpretable** — gene/sample identifiers for it are
+expected from the data source in the future; until then it can't be joined to any
+other file here by gene.
+
+What's confirmed by direct inspection of the raw file (not assumed):
+- The file uses bare `\r` (CR-only) line endings — splitting on `\n` collapses it
+  to one line. Correctly split, it holds **2418 records**, each 16
+  `index\tvalue` pairs (indices `0`-`15`, no header, no ID column).
+- Indices 0-9 ("Mu"): 10 continuous values per record, ~`[0, 100]`.
+- Indices 10-15 ("Theta"): 6 non-negative values that sum to **exactly 1.0 in
+  every one of the 2418 records** — a probability/mixture-weight vector over 6
+  categories.
+
+That 6-category count matches this project's 6 post-transcriptional "RNA operon"
+regulators (`PostReg5`.."PostReg10" in `REGULATOR_ORDER`), and one category (theta_0)
+dominates the argmax far more than uniform (35.6% vs. 16.7%) — echoing lhp-1's
+outsized real target share among those 6 regulators (53.9%). But
+`compare_theta_dominance_to_real_network()` shows the resemblance stops there: the
+relative ranking of the other 5 theta categories does **not** match the other 5
+regulators' real target-count shares (e.g. theta_1's simulated dominance share is the
+*smallest* of the six, while the real PostReg6/rrp-3 share is the *second largest*).
+So this is flagged as a structural resemblance worth watching, not a confirmed
+identity mapping — `load_mutheta_sim()` keeps the theta columns generically named
+(`theta_0`..`theta_5`) by default, and only labels them as specific regulators if you
+explicitly opt in (`label_theta_as_post_transcriptional=True`), which the docstring
+is explicit is an assumption. A cleaned, parsed copy is cached at
+`data/processed/mutheta_sim_m4.csv`.
 
 ## Novel extension: is the FFL count actually significant?
 
@@ -340,8 +373,9 @@ neurospora_clock_model/
 │   ├── raw/
 │   │   ├── Connection_Matrix.xlsx
 │   │   ├── binding_strength_by_function.csv
+│   │   ├── MuThetaDataSim_m4.txt      # pending gene IDs from data source, see README
 │   │   └── uniprotkb_proteome_UP000001805_2026_07_02.fasta
-│   └── processed/             # cached null-model, enrichment, gene-family, 3D-layout results (app reads these)
+│   └── processed/             # cached null-model, enrichment, gene-family, 3D-layout, mutheta-sim results (app reads these)
 ├── src/
 │   ├── data_loader.py         # done
 │   ├── network_builder.py     # done
@@ -353,13 +387,15 @@ neurospora_clock_model/
 │   ├── link_analysis.py       # done
 │   ├── gene_layout_3d.py      # done
 │   ├── binding_strength.py    # done
+│   ├── mutheta_loader.py      # done, not yet wired into app -- see README
 │   └── sequence_families.py   # done
 ├── app/streamlit_app.py       # done
-├── tests/                     # done (47 tests)
+├── tests/                     # done (72 tests)
 │   ├── test_ffl_count.py
 │   ├── test_viz.py
 │   ├── test_link_analysis.py
-│   └── test_sequence_families.py
+│   ├── test_sequence_families.py
+│   └── test_mutheta_loader.py
 └── notebooks/
 ```
 
