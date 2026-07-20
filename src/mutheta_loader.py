@@ -1,20 +1,29 @@
-"""Loads ``data/raw/MuThetaDataSim_m4.txt``, a user-supplied simulated
-dataset (source and generating model not yet documented by the project --
-see caveats below).
+"""Loads ``data/raw/MuThetaDataSim_m4.txt`` (a user-supplied simulated
+dataset) and ``data/raw/ALLNCU.txt`` (the gene-identifier list for it,
+supplied later, same row order), then tests -- not just gestures at -- the
+hypothesis that Theta encodes per-gene post-transcriptional regulator
+assignment.
 
 **File-format quirks handled here (discovered by direct inspection, not
 assumed):**
 
-1. The file uses bare ``\\r`` (CR-only, classic-Mac-style) line endings, not
-   ``\\n`` or ``\\r\\n``. Reading it with a normal line iterator collapses
-   the whole file into one line; it must be split on ``\\r`` explicitly.
+1. ``MuThetaDataSim_m4.txt`` uses bare ``\\r`` (CR-only, classic-Mac-style)
+   line endings, not ``\\n`` or ``\\r\\n``. Reading it with a normal line
+   iterator collapses the whole file into one line; it must be split on
+   ``\\r`` explicitly.
 2. Each record is a run of 16 ``index\\tvalue`` pairs, indices ``0``-``15``
    in order, with no record separator other than the index resetting to
-   ``0``. There is no header row and no gene/sample identifier column.
+   ``0``. There is no header row and no gene/sample identifier column in
+   this file itself.
 3. Splitting on that reset yields exactly 2418 records for the current
    file (``_m4`` in the filename -- presumably one of several simulation
    scenarios/configurations; siblings such as ``_m1``-``_m3`` may exist but
    are not present in this repo).
+4. ``ALLNCU.txt`` is a plain newline-delimited list of NCU gene IDs, also
+   exactly 2418 lines -- confirmed to be in the same order as the sim
+   records (see ``load_mutheta_sim_with_genes``). It has 202 duplicate
+   lines (2216 distinct genes across 2418 rows) -- some genes appear at
+   more than one ``sim_index``, each with its own Mu/Theta values.
 
 **What the two blocks are, and what is/isn't confirmed:**
 
@@ -25,32 +34,41 @@ assumed):**
   sum to ``1.0`` in every record (verified, not assumed) -- unambiguously a
   probability / mixture-weight vector over 6 categories.
 
-**Structural resemblance to this project's real data (suggestive, not
-proven):** this project's Connection_Matrix.xlsx defines exactly 6
+**Confirmed by the gene list:** every one of the 2216 distinct genes in
+``ALLNCU.txt`` is present as a real target-gene column in the cleaned
+``Connection_Matrix.xlsx`` matrix (100% overlap) -- strong evidence this
+dataset is drawn from the same gene universe as the rest of this project,
+not an unrelated import.
+
+**Tested and NOT confirmed (this matters -- read before using Theta as a
+regulator label):** this project's Connection_Matrix.xlsx defines exactly 6
 post-transcriptional "RNA operon" regulators (``REGULATOR_ORDER[-6:]`` in
 ``network_builder.py``: PostReg5 NCU08295/lhp-1, PostReg6 NCU04504/rrp-3,
 PostReg7 NCU03363, PostReg8 NCU04799/pab-1, PostReg9 NCU00919/rok-1,
-PostReg10 NCU09349/has-1) -- the same count as the Theta block here, and the
-paper's whole method (VTENS) is about estimating soft/ensemble regulator
-assignment, which is exactly what a 6-way probability vector would encode.
-``compare_theta_dominance_to_real_network()`` below checks this
-quantitatively: category 0 of Theta *is* the single dominant category far
-more often than a uniform 1/6 (matching lhp-1 being the real network's
-dominant post-transcriptional regulator by a wide margin), but the relative
-ranking of the other 5 categories does **not** cleanly match the other 5
-regulators' real target-count shares. So: the "one dominant category out of
-6" structural fact matches; a full one-to-one identity mapping of
-theta columns 1-5 to specific regulators is NOT established by this data
-alone and should not be assumed.
+PostReg10 NCU09349/has-1) -- the same count as the Theta block, which
+initially looked like a promising match (theta_0 dominates the argmax at a
+rate that echoes lhp-1's real dominance). ``best_theta_to_regulator_mapping()``
+tests this directly, per gene, against the real data: for the 887 genes in
+the sim's gene list that are targeted by exactly one of the 6 real
+post-transcriptional regulators, it brute-forces all 720 permutations of
+"theta column -> regulator label" and scores each by how often
+argmax(mean Theta for that gene) matches that gene's real regulator.
 
-There is no gene/sample identifier in the raw file, so individual records
-cannot yet be joined to ``gene_families.csv``, ``enrichment_results.csv``,
-or ``Connection_Matrix.xlsx`` by gene. Row order is preserved on load
-(``sim_index`` 0..2417) so that a future gene-name list (same row order)
-can be joined on later.
+**Result: the best possible permutation scores ~0.29 accuracy -- worse than
+the trivial baseline of always guessing lhp-1 (~0.56, since lhp-1 alone
+targets 500/887 = 56% of these genes), and only marginally better than the
+mean-over-all-permutations of 1/6 (chance).** This refutes the "Theta is a
+per-gene post-transcriptional-regulator assignment posterior" hypothesis --
+the shared category count and the single-dominant-category shape were
+apparently coincidental, not a real semantic match. What Mu and Theta
+actually represent is still an open question; per-gene real regulator
+identity is *not* it, at least not directly. Flagged rather than quietly
+dropped, per this project's convention of reporting discrepancies instead
+of forcing numbers to match.
 """
 from __future__ import annotations
 
+import itertools
 import os
 
 import pandas as pd
@@ -58,15 +76,18 @@ import pandas as pd
 from network_builder import REGULATOR_ORDER
 
 DEFAULT_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "raw", "MuThetaDataSim_m4.txt")
+GENE_LIST_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "raw", "ALLNCU.txt")
 
 N_MU = 10
 N_THETA = 6
 RECORD_LEN = N_MU + N_THETA  # 16
 
 # The 6 post-transcriptional regulators, in this project's canonical order.
-# NOT asserted to be the identity of theta_0..theta_5 -- see module
-# docstring caveat. Kept here only so callers can opt into that labeling
-# explicitly via `label_theta_as_post_transcriptional=True`.
+# NOT confirmed to be the identity of theta_0..theta_5 -- see module
+# docstring; best_theta_to_regulator_mapping() tests and refutes the
+# straightforward positional version of this assumption. Kept here so
+# callers can still opt into that (unconfirmed) labeling explicitly via
+# `label_theta_as_post_transcriptional=True`.
 POST_TRANSCRIPTIONAL_LABELS = REGULATOR_ORDER[-6:]
 
 
@@ -133,6 +154,113 @@ def load_mutheta_sim(
     return df
 
 
+def load_gene_list(path: str = GENE_LIST_PATH) -> list[str]:
+    """Returns the NCU gene IDs in ``ALLNCU.txt``, in file order (duplicates
+    kept as-is -- some genes appear at more than one sim row)."""
+    with open(path) as f:
+        return [line.strip() for line in f if line.strip()]
+
+
+def load_mutheta_sim_with_genes(
+    mutheta_path: str = DEFAULT_PATH, gene_list_path: str = GENE_LIST_PATH
+) -> pd.DataFrame:
+    """``load_mutheta_sim()`` with a ``gene`` column joined on by row order.
+
+    Raises if the two files don't have matching lengths -- the join is
+    positional (``sim_index`` i <-> line i of ``ALLNCU.txt``), so a length
+    mismatch means the correspondence can't be trusted.
+    """
+    df = load_mutheta_sim(mutheta_path)
+    genes = load_gene_list(gene_list_path)
+    if len(genes) != len(df):
+        raise ValueError(
+            f"Gene list has {len(genes)} entries but sim data has {len(df)} records -- "
+            "positional join is not valid."
+        )
+    df = df.copy()
+    df["gene"] = genes
+    return df
+
+
+def real_post_transcriptional_regulator(
+    genes: list[str] | None = None,
+    connection_matrix_path: str = "data/raw/Connection_Matrix.xlsx",
+) -> dict[str, str]:
+    """Maps gene -> its canonical post-transcriptional regulator label, for
+    genes targeted by *exactly one* of the 6 real post-transcriptional
+    regulators (ambiguous genes targeted by 2+ are excluded, since there's
+    no single label to test against)."""
+    from data_loader import REGULATOR_INFO, load_clean
+
+    targets, _, _ = load_clean(connection_matrix_path)
+    targets = targets.reindex(REGULATOR_ORDER)
+
+    if genes is None:
+        genes = list(dict.fromkeys(load_gene_list()))  # de-duplicated, order preserved
+
+    result = {}
+    for gene in genes:
+        if gene not in targets.columns:
+            continue
+        hits = [lab for lab in POST_TRANSCRIPTIONAL_LABELS if targets.loc[lab, gene] == 1]
+        if len(hits) == 1:
+            result[gene] = hits[0]
+    return result
+
+
+def best_theta_to_regulator_mapping(
+    mutheta_path: str = DEFAULT_PATH,
+    gene_list_path: str = GENE_LIST_PATH,
+    connection_matrix_path: str = "data/raw/Connection_Matrix.xlsx",
+) -> dict:
+    """Brute-force tests every permutation of theta_0..theta_5 against the 6
+    real post-transcriptional regulator labels, scoring each by per-gene
+    prediction accuracy (argmax of that gene's mean Theta vector, across its
+    sim rows, vs. its real single post-transcriptional regulator).
+
+    Returns a dict with: ``n_genes_evaluated``, ``majority_baseline_acc``
+    (always guessing the most common real label), ``best_perm`` (theta_i ->
+    label list) and ``best_acc``, ``worst_perm``/``worst_acc``, and
+    ``mean_acc_all_permutations`` (should be ~1/6 = chance).
+
+    See module docstring: the empirical result is that ``best_acc`` is
+    *below* ``majority_baseline_acc`` -- Theta's argmax does not identify a
+    gene's real post-transcriptional regulator better than guessing lhp-1
+    for everyone.
+    """
+    sim = load_mutheta_sim_with_genes(mutheta_path, gene_list_path)
+    theta_cols = [f"theta_{i}" for i in range(N_THETA)]
+    mean_theta_by_gene = sim.groupby("gene")[theta_cols].mean()
+
+    real_regulator = real_post_transcriptional_regulator(
+        genes=list(mean_theta_by_gene.index), connection_matrix_path=connection_matrix_path
+    )
+    eval_genes = list(real_regulator.keys())
+    y_true = [real_regulator[g] for g in eval_genes]
+    argmax_idx = mean_theta_by_gene.loc[eval_genes, theta_cols].values.argmax(axis=1)
+
+    majority_label = pd.Series(y_true).value_counts().idxmax()
+    majority_baseline_acc = sum(y == majority_label for y in y_true) / len(y_true)
+
+    scored = []
+    for perm in itertools.permutations(POST_TRANSCRIPTIONAL_LABELS):
+        pred = [perm[i] for i in argmax_idx]
+        acc = sum(p == t for p, t in zip(pred, y_true)) / len(y_true)
+        scored.append((acc, list(perm)))
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    return {
+        "n_genes_evaluated": len(eval_genes),
+        "majority_baseline_acc": majority_baseline_acc,
+        "majority_label": majority_label,
+        "best_perm": scored[0][1],
+        "best_acc": scored[0][0],
+        "worst_perm": scored[-1][1],
+        "worst_acc": scored[-1][0],
+        "mean_acc_all_permutations": sum(s[0] for s in scored) / len(scored),
+    }
+
+
 def compare_theta_dominance_to_real_network(
     connection_matrix_path: str = "data/raw/Connection_Matrix.xlsx",
 ) -> pd.DataFrame:
@@ -165,8 +293,8 @@ def compare_theta_dominance_to_real_network(
 
 
 if __name__ == "__main__":
-    df = load_mutheta_sim()
-    print(f"Loaded {len(df)} records")
+    df = load_mutheta_sim_with_genes()
+    print(f"Loaded {len(df)} records, {df['gene'].nunique()} distinct genes")
     print(df.head())
     print()
     print("Dominant theta column distribution:")
@@ -174,3 +302,12 @@ if __name__ == "__main__":
     print()
     print("Comparison to real post-transcriptional regulator target shares:")
     print(compare_theta_dominance_to_real_network().round(3))
+    print()
+    print("Per-gene validation against real post-transcriptional regulator identity:")
+    result = best_theta_to_regulator_mapping()
+    print(f"  genes evaluated: {result['n_genes_evaluated']}")
+    print(f"  majority-class baseline (always '{result['majority_label']}'): {result['majority_baseline_acc']:.3f}")
+    print(f"  best of 720 permutations: {result['best_acc']:.3f}  {result['best_perm']}")
+    print(f"  mean over all permutations (chance): {result['mean_acc_all_permutations']:.3f}")
+    if result["best_acc"] < result["majority_baseline_acc"]:
+        print("  -> Theta's argmax does NOT beat the majority baseline. Hypothesis refuted.")

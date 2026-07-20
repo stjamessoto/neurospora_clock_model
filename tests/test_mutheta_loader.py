@@ -1,5 +1,6 @@
 """Tests for mutheta_loader.py -- the loader for the user-supplied,
-CR-delimited MuThetaDataSim_m4.txt simulated dataset."""
+CR-delimited MuThetaDataSim_m4.txt simulated dataset and its gene list
+(ALLNCU.txt), plus the per-gene validation against real regulator identity."""
 import os
 import sys
 
@@ -12,7 +13,11 @@ from mutheta_loader import (  # noqa: E402
     N_MU,
     N_THETA,
     POST_TRANSCRIPTIONAL_LABELS,
+    best_theta_to_regulator_mapping,
+    load_gene_list,
     load_mutheta_sim,
+    load_mutheta_sim_with_genes,
+    real_post_transcriptional_regulator,
 )
 
 
@@ -81,3 +86,57 @@ def test_label_theta_as_post_transcriptional_option():
     for label in POST_TRANSCRIPTIONAL_LABELS:
         assert label in labeled.columns
     assert set(labeled["dominant_theta"].unique()) <= set(POST_TRANSCRIPTIONAL_LABELS)
+
+
+# --- ALLNCU.txt gene list ---------------------------------------------
+
+
+def test_gene_list_length_matches_sim_record_count(df):
+    assert len(load_gene_list()) == len(df)
+
+
+def test_gene_list_has_expected_duplication():
+    # Fixed fact about the source file: 2418 lines, 2216 distinct genes.
+    genes = load_gene_list()
+    assert len(genes) == 2418
+    assert len(set(genes)) == 2216
+
+
+def test_every_distinct_gene_is_a_real_target_gene():
+    """Every gene in ALLNCU.txt is a real column in the cleaned
+    Connection_Matrix.xlsx target matrix -- strong evidence this dataset
+    was drawn from the same gene universe as the rest of this project."""
+    from data_loader import load_clean
+
+    targets, _, _ = load_clean("data/raw/Connection_Matrix.xlsx")
+    genes = set(load_gene_list())
+    assert genes <= set(targets.columns)
+
+
+def test_load_mutheta_sim_with_genes_joins_by_row_order():
+    joined = load_mutheta_sim_with_genes()
+    assert len(joined) == 2418
+    assert list(joined["gene"]) == load_gene_list()
+
+
+# --- Per-gene validation against the real network -----------------------
+
+
+def test_real_post_transcriptional_regulator_lookup():
+    lookup = real_post_transcriptional_regulator()
+    assert 800 < len(lookup) < 900  # 887 at time of writing; loose bound
+    assert set(lookup.values()) <= set(POST_TRANSCRIPTIONAL_LABELS)
+
+
+def test_theta_argmax_does_not_beat_majority_baseline_for_real_regulator_identity():
+    """Locks in the module's central finding: brute-forcing all 720
+    theta-column -> regulator-label permutations, the best achievable
+    per-gene accuracy against each gene's real single post-transcriptional
+    regulator is *below* the trivial "always guess the majority regulator"
+    baseline. If this ever flips, it's a real finding worth updating the
+    README over -- not something to just delete on failure."""
+    result = best_theta_to_regulator_mapping()
+    assert result["n_genes_evaluated"] > 500
+    assert result["best_acc"] < result["majority_baseline_acc"]
+    # sanity: the permutation search itself should average out to chance
+    assert result["mean_acc_all_permutations"] == pytest.approx(1 / N_THETA, abs=0.01)

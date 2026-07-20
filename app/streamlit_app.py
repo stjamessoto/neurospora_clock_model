@@ -57,6 +57,14 @@ from sequence_families import (  # noqa: E402
     UNRESOLVED_REGULATORS,
     resolve_regulator_gene_names,
 )
+from mutheta_loader import (  # noqa: E402
+    DEFAULT_PATH as MUTHETA_PATH,
+    N_MU,
+    N_THETA,
+    best_theta_to_regulator_mapping,
+    compare_theta_dominance_to_real_network,
+    load_mutheta_sim_with_genes,
+)
 from st_link_analysis import st_link_analysis  # noqa: E402
 
 DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "raw", "Connection_Matrix.xlsx")
@@ -224,6 +232,13 @@ FAMILY_COLUMN_CONFIG = {
     "family_size": st.column_config.NumberColumn("Family size (k)", format="%d"),
 }
 
+MUTHETA_COLUMN_CONFIG = {
+    "gene": "Gene",
+    "dominant_theta": "Dominant θ column",
+    **{f"mu_{i}": st.column_config.NumberColumn(f"μ_{i}", format="%.2f") for i in range(N_MU)},
+    **{f"theta_{i}": st.column_config.NumberColumn(f"θ_{i}", format="%.3f") for i in range(N_THETA)},
+}
+
 
 @st.cache_resource
 def _load_network():
@@ -287,6 +302,23 @@ def _load_binding_strength():
     return load_binding_strength_by_function()
 
 
+@st.cache_data
+def _load_mutheta_sim():
+    if not os.path.exists(MUTHETA_PATH):
+        return None
+    return load_mutheta_sim_with_genes()
+
+
+@st.cache_data
+def _load_mutheta_mapping_result():
+    return best_theta_to_regulator_mapping(connection_matrix_path=DATA_PATH)
+
+
+@st.cache_data
+def _load_mutheta_comparison():
+    return compare_theta_dominance_to_real_network(connection_matrix_path=DATA_PATH)
+
+
 net = _load_network()
 cleaning_report = _load_cleaning_report()
 enrichment_df = _load_enrichment()
@@ -298,6 +330,7 @@ link_elements = _load_link_analysis_elements(net)
 link_node_styles, link_edge_styles = _load_link_analysis_styles(net)
 gene_layout_3d_result = _load_gene_layout_3d()
 binding_strength_df = _load_binding_strength()
+mutheta_df = _load_mutheta_sim()
 regulator_gene_names = resolve_regulator_gene_names(REGULATOR_INFO)
 
 # ---------------------------------------------------------------------------
@@ -311,11 +344,12 @@ st.caption(
     "**Overview** tab."
 )
 
-tab_overview, tab_matrix, tab_binding, tab_ffl, tab_enrich, tab_viz, tab_families, tab_method = st.tabs(
+tab_overview, tab_matrix, tab_binding, tab_mutheta, tab_ffl, tab_enrich, tab_viz, tab_families, tab_method = st.tabs(
     [
         "🏠 Overview",
         "📋 Matrix Explorer",
         "🔬 Binding Strengths",
+        "🎲 Mu/Theta Sim",
         "🔁 FFLs & Null Model",
         "🧪 Enrichment Tests",
         "🕸️ Network Viz",
@@ -331,72 +365,71 @@ tab_overview, tab_matrix, tab_binding, tab_ffl, tab_enrich, tab_viz, tab_familie
 with tab_overview:
     st.markdown(
         f"""
-**What this is.** *Neurospora crassa* (bread mold) is the model organism used to work
-out how the circadian clock operates at the molecular level. Its clock is driven by a
-core feedback loop (the *frq* / *wc-1* / *wc-2* genes), whose protein product **WCC**
-(White Collar Complex) acts as the master regulator broadcasting time-of-day and
-light information outward to the rest of the genome.
-
-The paper behind this project — *{PAPER_CITATION}* — used a computationally
-expensive Monte Carlo method (**Variable Topology Ensemble Methods**, fit against
-60,759 mRNA measurements on GPUs over a 61-day run) to reconstruct which of
-**3,380 clock-controlled genes** are regulated by which of **11 regulators**
-downstream of WCC — 5 classic transcription factors and 6 **RNA operons**:
-post-transcriptional regulators that control mRNA *stability* rather than
-transcription, per Jack Keene's "RNA operon" hypothesis (each of the 11 gets its
-own color throughout the Network Viz tab). The paper's central, striking finding
-was that the largest single regulatory hub in the entire network wasn't a
-transcription factor — it was **lhp-1**, an RNA-binding protein, with more target
-genes than the master regulator WCC itself.
-
-**What this project adds.** The fitted network is treated here as real input data
-(`data/raw/Connection_Matrix.xlsx`). The paper reported network-motif counts (e.g.
-"71 feedforward loops, versus 40 in *E. coli*") as a **qualitative** size comparison.
-This project asks the question the paper didn't: *compared to what, exactly?* It adds
-a formal **degree-preserving null model** (is the feedforward-loop count more than
-you'd expect from a randomly rewired network with the same regulator target counts?)
-and **Benjamini-Hochberg FDR-corrected hypergeometric tests** for every pairwise and
-triple-wise regulator combination (do any two or three regulators share more — or
-fewer — target genes than chance?).
-
-**One important caveat, upfront.** The exported connection matrix this app reads
-turns out to cap every target gene at **at most 2** regulators, whereas the paper's
-underlying model (**Variable Topology Ensemble Methods**, VTENS) fits a continuous
-binding strength for every regulator against every candidate target, with topology
-and kinetics estimated **jointly** by MCMC under a "supernet" formulation — each
-accepted sample is one whole candidate network, not an independent draw per
-(regulator, target) pair. `Connection_Matrix.xlsx` is a thresholded snapshot of that
-joint fit (the dominant regulator(s) per gene), not the full multi-way estimate. That
-single structural difference explains essentially every place the numbers in this
-app diverge from the paper's published figures. Every such divergence is reported
-explicitly rather than adjusted away — see the **🔬 Binding Strengths** tab for a
-real (function-level) slice of the underlying continuous estimates and exactly what
-they do and don't support, and the **Methodology & Paper Comparison** tab for the
-full accounting.
+*Neurospora crassa* (bread mold) is the model organism used to work out how the
+circadian clock operates at the molecular level. Its clock is driven by a core
+feedback loop (*frq* / *wc-1* / *wc-2*), whose protein product **WCC** (White
+Collar Complex) is the master regulator broadcasting time-of-day and light
+information outward to the rest of the genome. This app explores the genome-scale
+network **WCC** sits atop — fitted by *{PAPER_CITATION}* — and adds statistical
+tests the paper itself never ran.
 """
     )
 
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Regulators downstream of WCC", "11", help="5 transcriptional + 6 post-transcriptional (\"RNA operon\") regulators.")
+    col2.metric("Target genes (cleaned)", f"{cleaning_report.n_target_genes_final:,}")
+    col3.metric("Largest single hub", "lhp-1", help="768 targets per the paper -- more than the master regulator WCC itself.")
+
+    with st.expander("📖 What this project adds (novel statistical tests)"):
+        st.markdown(
+            """
+The fitted network is treated here as real input data (`data/raw/Connection_Matrix.xlsx`).
+The paper reported network-motif counts (e.g. "71 feedforward loops, versus 40 in
+*E. coli*") as a **qualitative** size comparison. This project asks the question the
+paper didn't: *compared to what, exactly?* It adds a formal **degree-preserving null
+model** (is the feedforward-loop count more than you'd expect from a randomly
+rewired network with the same regulator target counts?), **Benjamini-Hochberg
+FDR-corrected hypergeometric tests** for every pairwise and triple-wise regulator
+combination (do any two or three regulators share more — or fewer — target genes
+than chance?), and two data sources the paper never touches at all: real protein
+sequence data (paralog gene families) and a simulated Mu/Theta dataset.
+"""
+        )
+
+    with st.expander("⚠️ One important caveat, upfront"):
+        st.markdown(
+            """
+The exported connection matrix this app reads turns out to cap every target gene at
+**at most 2** regulators, whereas the paper's underlying model (**Variable Topology
+Ensemble Methods**, VTENS) fits a continuous binding strength for every regulator
+against every candidate target, with topology and kinetics estimated **jointly** by
+MCMC under a "supernet" formulation — each accepted sample is one whole candidate
+network, not an independent draw per (regulator, target) pair.
+`Connection_Matrix.xlsx` is a thresholded snapshot of that joint fit (the dominant
+regulator(s) per gene), not the full multi-way estimate. That single structural
+difference explains essentially every place the numbers in this app diverge from
+the paper's published figures. Every such divergence is reported explicitly rather
+than adjusted away — see the **🔬 Binding Strengths** tab for a real
+(function-level) slice of the underlying continuous estimates, and the **📖
+Methodology & Paper Comparison** tab for the full accounting.
+"""
+        )
+
+    st.divider()
     st.markdown("**How to use this app:**")
     st.markdown(
         """
-1. **📋 Matrix Explorer** — browse the cleaned data itself: which genes each
-   regulator targets, and a lookup for any individual gene.
-2. **🔬 Binding Strengths** — a real slice of the paper's continuous, jointly-fit
-   binding strengths (function-level, not gene-level), and why they aren't the same
-   thing as per-parameter statistical significance.
-3. **🔁 FFLs & Null Model** — a specific 3-gene network pattern (the feedforward
-   loop) and whether it shows up more than random chance would predict.
-4. **🧪 Enrichment Tests** — do pairs/triples of regulators share more (or fewer)
-   target genes than chance? A filterable results table.
-5. **🕸️ Network Viz** — interactive diagrams of the whole network — hub structure,
-   every regulator plus all 3,026 target genes (2D or 3D, each regulator its own
-   color), and the feedforward-loop network — click through to see roles and
-   relationships.
-6. **🧬 Gene Families** — which clock-network genes have close relatives elsewhere
-   in the genome, based on real protein sequence data.
-7. **📖 Methodology & Paper Comparison** — the technical detail: every number here
-   side-by-side with the paper's, why they differ, and a glossary of every term
-   used in this app.
+- **📋 Matrix Explorer** — browse the cleaned data itself, and look up any gene.
+- **🔬 Binding Strengths** — the paper's continuous, function-level binding strengths.
+- **🎲 Mu/Theta Sim** — a simulated dataset joined to this project's genes, and why
+  its leading interpretation didn't hold up.
+- **🔁 FFLs & Null Model** — a 3-gene network pattern, tested against random chance.
+- **🧪 Enrichment Tests** — do regulator pairs/triples share more or fewer targets
+  than chance? A filterable results table.
+- **🕸️ Network Viz** — interactive 2D/3D diagrams of the whole network.
+- **🧬 Gene Families** — clock-network genes' paralogs, from real sequence data.
+- **📖 Methodology & Paper Comparison** — every number here vs. the paper's, and
+  why they differ.
 """
     )
 
@@ -406,7 +439,7 @@ full accounting.
 
 with tab_matrix:
     st.subheader("Raw connection matrix, cleaned")
-    with st.expander("ℹ️ How to read this tab", expanded=True):
+    with st.expander("ℹ️ How to read this tab"):
         st.markdown(
             """
 This tab shows the data behind everything else in the app: which of the 11
@@ -506,7 +539,7 @@ cleaning step against the raw file.
 
 with tab_binding:
     st.subheader("Binding strength by function")
-    with st.expander("ℹ️ What is this, and what it is *not*", expanded=True):
+    with st.expander("ℹ️ What is this, and what it is *not*"):
         st.markdown(
             f"""
 A separate, user-supplied table (`data/raw/binding_strength_by_function.csv`):
@@ -555,12 +588,124 @@ regulator for this function," full stop.
         )
 
 # ---------------------------------------------------------------------------
+# Tab: simulated Mu/Theta dataset (user-supplied, gene identity confirmed,
+# regulator-assignment hypothesis tested and refuted)
+# ---------------------------------------------------------------------------
+
+with tab_mutheta:
+    st.subheader("Simulated Mu/Theta dataset")
+    with st.expander("ℹ️ What is this, and what did we learn from it?"):
+        st.markdown(
+            """
+Two more user-supplied files: `data/raw/MuThetaDataSim_m4.txt` (2,418 simulated
+records, CR-delimited, no header) and `data/raw/ALLNCU.txt` (its gene IDs, supplied
+afterward — confirmed to be in the same row order, since both files are exactly
+2,418 lines long).
+
+Each record has two blocks:
+- **Mu** (10 values) — continuous, roughly 0-100. What these represent is still an
+  open question.
+- **Theta** (6 values) — always sums to exactly 1.0: a probability/mixture-weight
+  vector over 6 categories.
+
+**Confirmed:** every one of the 2,216 distinct genes in `ALLNCU.txt` is a real
+target gene in this project's `Connection_Matrix.xlsx` — this dataset shares its
+gene space with the rest of the project, not a coincidence.
+
+**Tested and refuted:** the leading hypothesis was that Theta's 6 categories are
+each gene's soft assignment across this project's 6 real post-transcriptional
+"RNA operon" regulators — motivated by the matching count of 6, and Theta's most
+common category dominating similarly to how lhp-1 dominates real target counts.
+Brute-forcing all 720 ways to label the 6 Theta columns against the 6 real
+regulators, then scoring per-gene prediction accuracy (does argmax(Theta) match a
+gene's real single post-transcriptional regulator?) against the 887 sim genes with
+one unambiguous real regulator, shows the *best possible* labeling still loses to
+simply guessing lhp-1 for every gene — see the metrics below. What Mu/Theta
+actually represent remains open; full detail in the README.
+"""
+        )
+
+    if mutheta_df is None:
+        st.info(f"Mu/Theta data not found at `{MUTHETA_PATH}`.")
+    else:
+        mapping_result = _load_mutheta_mapping_result()
+        majority_gene_name = REGULATOR_INFO[mapping_result["majority_label"]]["gene"]
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric(
+            "Sim records / distinct genes",
+            f"{len(mutheta_df):,} / {mutheta_df['gene'].nunique():,}",
+        )
+        col2.metric(
+            "Best-case accuracy (any labeling)",
+            f"{mapping_result['best_acc']:.1%}",
+            help="Best of all 720 permutations of theta column -> real regulator label.",
+        )
+        col3.metric(
+            f"Majority baseline (always '{majority_gene_name}')",
+            f"{mapping_result['majority_baseline_acc']:.1%}",
+            delta=f"{(mapping_result['best_acc'] - mapping_result['majority_baseline_acc']):.1%} vs. best-case",
+            delta_color="inverse",
+            help="Always guessing the most common real regulator beats Theta's argmax under every labeling tried.",
+        )
+        st.caption(
+            "Best-case accuracy is *below* the majority baseline — Theta's argmax does not "
+            "predict a gene's real post-transcriptional regulator better than always "
+            "guessing lhp-1. Hypothesis refuted, not confirmed."
+        )
+
+        st.divider()
+        st.markdown("**Theta's dominant-category share: simulated vs. real regulator target share**")
+        st.caption(
+            "If Theta really encoded regulator assignment, these two bars would track each "
+            "other closely for every regulator. Only the biggest one (lhp-1) roughly does."
+        )
+        comparison_df = _load_mutheta_comparison().copy()
+        comparison_df["Regulator"] = [
+            REGULATOR_INFO[lab]["gene"] for lab in comparison_df["candidate_regulator"]
+        ]
+        chart_df = comparison_df.set_index("Regulator")[["sim_dominant_share", "real_target_share"]]
+        chart_df.columns = ["Simulated dominant share", "Real target share"]
+        st.bar_chart(chart_df)
+
+        st.divider()
+        st.markdown("**Look up a gene's simulated Mu/Theta values**")
+        mutheta_gene_options = sorted(mutheta_df["gene"].unique())
+        mutheta_gene_query = st.selectbox(
+            "Gene (NCU ID)",
+            options=mutheta_gene_options,
+            index=None,
+            placeholder="Start typing an NCU ID…",
+            help="Some genes appear more than once (202 repeats in ALLNCU.txt) — each has its own row.",
+            key="mutheta_gene_lookup",
+        )
+        if mutheta_gene_query:
+            rows = mutheta_df[mutheta_df["gene"] == mutheta_gene_query].reset_index()
+            st.dataframe(
+                rows,
+                width="stretch",
+                hide_index=True,
+                column_config=MUTHETA_COLUMN_CONFIG,
+            )
+
+        st.divider()
+        st.markdown("**Full simulated dataset**")
+        st.caption("Rows = sim records, joined to gene names by row order. Scroll to explore.")
+        st.dataframe(
+            mutheta_df.reset_index(),
+            width="stretch",
+            height=350,
+            hide_index=True,
+            column_config=MUTHETA_COLUMN_CONFIG,
+        )
+
+# ---------------------------------------------------------------------------
 # Tab: FFL results + null model
 # ---------------------------------------------------------------------------
 
 with tab_ffl:
     st.subheader("Feedforward loops (FFLs)")
-    with st.expander("ℹ️ What's a feedforward loop, and what's a null model?", expanded=True):
+    with st.expander("ℹ️ What's a feedforward loop, and what's a null model?"):
         st.markdown(
             """
 An **FFL** is a specific 3-gene wiring pattern: the master regulator WCC regulates
@@ -623,7 +768,7 @@ histogram below shows.
 
 with tab_enrich:
     st.subheader("Pairwise & triple-wise regulator co-targeting enrichment")
-    with st.expander("ℹ️ What does this test mean, and how do I use the filters?", expanded=True):
+    with st.expander("ℹ️ What does this test mean, and how do I use the filters?"):
         st.markdown(
             """
 For every pair (55) and every group of three (165) of the 11 regulators, this asks:
@@ -722,7 +867,7 @@ with tab_viz:
 
     with subtab_hub:
         st.subheader("Hub structure — click through the network")
-        with st.expander("ℹ️ How to use this diagram", expanded=True):
+        with st.expander("ℹ️ How to use this diagram"):
             st.markdown(
                 """
 This reproduces the paper's Figure 1A layout: **WCC at the center**, broadcasting
@@ -867,7 +1012,7 @@ depleted relationships.
         genes_view_mode = genes_view_mode or "2D"
 
         if genes_view_mode == "2D":
-            with st.expander("ℹ️ How to read this diagram", expanded=True):
+            with st.expander("ℹ️ How to read this diagram"):
                 st.markdown(
                     """
 Every one of this project's 3,026 target genes plotted as its own point,
@@ -923,7 +1068,7 @@ component doesn't always auto-fit its very first render to the full width.
                         unsafe_allow_html=True,
                     )
         else:
-            with st.expander("ℹ️ How to read this diagram", expanded=True):
+            with st.expander("ℹ️ How to read this diagram"):
                 st.markdown(
                     """
 The same regulator + gene graph as the 2D view, laid out in true 3D instead:
@@ -965,7 +1110,7 @@ zoom.
 
     with subtab_ffl:
         st.subheader(f"Feedforward-loop network ({ffl_result.total_ffl_count} loops)")
-        with st.expander("ℹ️ How to read this diagram", expanded=True):
+        with st.expander("ℹ️ How to read this diagram"):
             st.markdown(
                 """
 This is the same feedforward-loop (FFL) count from the **FFLs & Null Model**
@@ -1010,7 +1155,7 @@ Use **"Focus on a regulator"** to isolate one regulator's loops.
 
 with tab_families:
     st.subheader("Sequence-based paralog gene families")
-    with st.expander("ℹ️ What is this tab, and where does the data come from?", expanded=True):
+    with st.expander("ℹ️ What is this tab, and where does the data come from?"):
         st.markdown(
             """
 Everything else in this app comes from the paper's fitted network. This tab is
@@ -1058,7 +1203,7 @@ picture of every family that includes a clock-network gene.
             f"are marked as clock-network genes. The other {n_not_clock:,} ({n_not_clock / n_total:.0%}) "
             "are real *N. crassa* genes too — just not part of the paper's clock model."
         )
-        with st.expander("ℹ️ Why aren't most genes \"clock-network genes\"?", expanded=True):
+        with st.expander("ℹ️ Why aren't most genes \"clock-network genes\"?"):
             st.markdown(
                 f"""
 **The definition used in this tab:** a gene counts as a "clock-network gene" if it's
@@ -1247,8 +1392,9 @@ not a definitive, publication-grade orthology call.
 
 with tab_method:
     st.subheader("Reproduced from the paper vs. novel in this project")
-    st.markdown(
-        f"""
+    with st.expander("📋 Full breakdown, file by file"):
+        st.markdown(
+            f"""
 **Reproduced from the paper** — the code lives in {file_ref('network_builder.py')}
 and {file_ref('ffl_analysis.py')}:
 - R/T matrix construction (Section III: "the regulatory CCG proteins do not regulate
@@ -1279,7 +1425,7 @@ and {file_ref('ffl_analysis.py')}:
 All charts in every tab of this app are built by {file_ref('viz.py')}, shared
 across tabs so the same colors and layout logic are used everywhere.
 """
-    )
+        )
 
     st.subheader("Validation table: this export vs. the published paper")
     validation_rows = [
@@ -1300,8 +1446,9 @@ across tabs so the same colors and layout logic are used everywhere.
     st.table(validation_df)
 
     st.subheader("Root cause of the divergence")
-    st.markdown(
-        """
+    with st.expander("🔍 Why the numbers don't match"):
+        st.markdown(
+            """
 Every gene in this exported matrix is regulated by **at most 2** of the 11
 regulators. The paper's underlying model (VTENS) doesn't fit each gene a set of
 11 independent per-regulator binding strengths tested one at a time — under its
@@ -1322,7 +1469,7 @@ binarization, not necessarily real biological antagonism).
 This is flagged rather than silently reconciled: report discrepancies, don't force
 numbers to match.
 """
-    )
+        )
 
     st.subheader("Citation")
     st.markdown(PAPER_CITATION)

@@ -24,11 +24,13 @@ coli").
 `src/null_models.py`, `src/enrichment.py`, `src/network_stats.py`, `src/viz.py`,
 `src/sequence_families.py`, `src/link_analysis.py`, `src/gene_layout_3d.py`,
 `src/binding_strength.py`, `src/mutheta_loader.py`, `app/streamlit_app.py`, plus the
-full `tests/` suite (72 tests, passing).
+full `tests/` suite (78 tests, passing).
 
-**Not yet built:** exploration notebook. **Blocked on external data:** interpreting
-`data/raw/MuThetaDataSim_m4.txt` (gene/sample identifiers pending from the data
-source — see "Pending: simulated Mu/Theta dataset" below).
+**Not yet built:** exploration notebook. **Open question:** what `data/raw/
+MuThetaDataSim_m4.txt`'s Mu/Theta values actually represent — gene identity is now
+confirmed (`ALLNCU.txt`) but the leading hypothesis (Theta = per-gene
+post-transcriptional-regulator assignment) has been tested and refuted — see
+"Simulated Mu/Theta dataset" below.
 
 ## Data cleaning findings (`src/data_loader.py`)
 
@@ -104,35 +106,57 @@ a `0.0000` cell means "not the estimated dominant regulator for this function" a
 **not** "this regulator's ensemble distribution excluded zero" — that's not a
 claim this data supports.
 
-## Pending: simulated Mu/Theta dataset (`src/mutheta_loader.py`)
+## Simulated Mu/Theta dataset: gene identity confirmed, regulator hypothesis refuted (`src/mutheta_loader.py`)
 
-A third user-supplied file, `data/raw/MuThetaDataSim_m4.txt`, has been added and
-parsed but is **not yet interpretable** — gene/sample identifiers for it are
-expected from the data source in the future; until then it can't be joined to any
-other file here by gene.
+Two more user-supplied files: `data/raw/MuThetaDataSim_m4.txt` (a simulated dataset)
+and `data/raw/ALLNCU.txt` (its gene-identifier list, supplied afterward, same row
+order — confirmed, not assumed, since both are exactly 2418 entries long).
 
-What's confirmed by direct inspection of the raw file (not assumed):
-- The file uses bare `\r` (CR-only) line endings — splitting on `\n` collapses it
-  to one line. Correctly split, it holds **2418 records**, each 16
-  `index\tvalue` pairs (indices `0`-`15`, no header, no ID column).
+**Format, confirmed by direct inspection of the raw file:**
+- `MuThetaDataSim_m4.txt` uses bare `\r` (CR-only) line endings — splitting on `\n`
+  collapses it to one line. Correctly split, it holds **2418 records**, each 16
+  `index\tvalue` pairs (indices `0`-`15`, no header, no ID column of its own).
 - Indices 0-9 ("Mu"): 10 continuous values per record, ~`[0, 100]`.
 - Indices 10-15 ("Theta"): 6 non-negative values that sum to **exactly 1.0 in
   every one of the 2418 records** — a probability/mixture-weight vector over 6
   categories.
+- `ALLNCU.txt` is 2418 lines, 2216 distinct NCU gene IDs (202 genes repeat, each
+  repeat getting its own sim row/Mu/Theta values).
 
-That 6-category count matches this project's 6 post-transcriptional "RNA operon"
-regulators (`PostReg5`.."PostReg10" in `REGULATOR_ORDER`), and one category (theta_0)
-dominates the argmax far more than uniform (35.6% vs. 16.7%) — echoing lhp-1's
-outsized real target share among those 6 regulators (53.9%). But
-`compare_theta_dominance_to_real_network()` shows the resemblance stops there: the
-relative ranking of the other 5 theta categories does **not** match the other 5
-regulators' real target-count shares (e.g. theta_1's simulated dominance share is the
-*smallest* of the six, while the real PostReg6/rrp-3 share is the *second largest*).
-So this is flagged as a structural resemblance worth watching, not a confirmed
-identity mapping — `load_mutheta_sim()` keeps the theta columns generically named
-(`theta_0`..`theta_5`) by default, and only labels them as specific regulators if you
-explicitly opt in (`label_theta_as_post_transcriptional=True`), which the docstring
-is explicit is an assumption. A cleaned, parsed copy is cached at
+**Confirmed: this is this project's gene universe.** Every one of the 2216 distinct
+genes in `ALLNCU.txt` is a real target-gene column in the cleaned
+`Connection_Matrix.xlsx` matrix — 100% overlap. Not a coincidental resemblance; this
+dataset shares its gene space with the rest of the project.
+
+**Tested and refuted: Theta is not a per-gene post-transcriptional-regulator
+posterior.** The initial hypothesis (motivated by the matching count of 6 categories,
+and theta_0 dominating the argmax similarly to how lhp-1 dominates real target
+counts) was that the 6 Theta values encode each gene's soft assignment across the 6
+real post-transcriptional "RNA operon" regulators (`PostReg5`.."PostReg10"). With
+gene identity now available, `best_theta_to_regulator_mapping()` tests this directly:
+for the 887 sim genes targeted by exactly one real post-transcriptional regulator, it
+brute-forces all 6! = 720 permutations of "theta column → regulator label" and scores
+per-gene prediction accuracy (argmax of that gene's mean Theta vs. its real
+regulator).
+
+| Quantity | Value |
+|---|---|
+| Genes evaluated | 887 |
+| Majority-class baseline (always guess lhp-1) | 0.564 |
+| **Best of 720 permutations** | **0.287** |
+| Mean over all permutations (chance) | 0.167 |
+
+**The best achievable accuracy (0.287) is below the trivial majority-guess baseline
+(0.564)** — Theta's argmax is a *worse* predictor of a gene's real post-transcriptional
+regulator than simply always guessing lhp-1. The category-count match and the
+single-dominant-category shape that motivated the hypothesis were apparently
+coincidental. `load_mutheta_sim()` therefore keeps the theta columns generically
+named (`theta_0`..`theta_5`); the opt-in `label_theta_as_post_transcriptional=True`
+labeling is kept available but its docstring is explicit that it's an unconfirmed,
+tested-and-rejected assumption, not a default to build further analysis on.
+
+What Mu and Theta actually represent remains an open question — flagged rather than
+forced, per this project's convention. A cleaned, gene-joined copy is cached at
 `data/processed/mutheta_sim_m4.csv`.
 
 ## Novel extension: is the FFL count actually significant?
@@ -301,21 +325,29 @@ sequential blue hue for magnitude/fit lines and the binding-strength heatmap:
 - A binding-strength-by-function heatmap (`binding_strength_heatmap`) — sequential
   blue for magnitude, exact zeros rendered as blank surface.
 
-`app/streamlit_app.py` is an 8-tab dashboard — **Overview**, Matrix Explorer,
-Binding Strengths, FFLs & Null Model, Enrichment Tests, Network Viz, Gene Families,
-Methodology & Paper Comparison — with the tabs immediately below the title (no long
-blurb blocking them) and every tab written for someone who hasn't read the paper:
-- **Overview** carries the explanatory blurb (what the clock network is, what the
-  paper found, what this project adds, the binarized-export caveat, and the joint
-  VTENS/MCMC framing behind it) plus a "how to use this app" walkthrough and a
-  glossary (regulator, RNA operon, FFL, null model, Z-score, hypergeometric test,
-  q-value, enriched/depleted) covering every term used elsewhere in the app.
+`app/streamlit_app.py` is a 9-tab dashboard — **Overview**, Matrix Explorer,
+Binding Strengths, **Mu/Theta Sim**, FFLs & Null Model, Enrichment Tests, Network
+Viz, Gene Families, Methodology & Paper Comparison — with the tabs immediately below
+the title and every tab written for someone who hasn't read the paper. Every
+explanatory block throughout the app lives inside a collapsed-by-default
+`st.expander("ℹ️ ...")` rather than static text, so a tab's default view is metrics,
+charts, and tables — the "why"/"how to read this" prose is a click away, not
+scrolled past:
+- **Overview** is now a short intro + 3 metrics up front, with "what this project
+  adds," "one important caveat" (the binarized-export/joint-VTENS-MCMC framing), and
+  the full "how to use this app" walkthrough behind expanders — plus a glossary
+  (regulator, RNA operon, FFL, null model, Z-score, hypergeometric test, q-value,
+  enriched/depleted) covering every term used elsewhere in the app.
 - **Matrix Explorer**'s gene lookup is a searchable dropdown (type to filter by NCU
   ID) rather than free text, so an unfamiliar user can't mistype a gene ID into a dead
   end.
 - **Binding Strengths** opens with an explicit "what this is *not*" callout: these are
   joint ensemble point estimates, not independent per-parameter distributions, and a
   zero cell is not the result of an ensemble-excludes-zero test.
+- **Mu/Theta Sim** surfaces `src/mutheta_loader.py`'s findings directly: record/gene
+  counts, the best-vs-majority-baseline accuracy metrics that refute the
+  regulator-assignment hypothesis, a simulated-vs-real dominant-share bar chart, a
+  per-gene Mu/Theta lookup dropdown, and the full joined dataset.
 - **Network Viz** has three subtabs — **Hub structure** (the 2D/3D toggle above, with
   a "Focus on a regulator" dropdown showing a paper-sourced description
   (`REGULATOR_BLURBS`, drawn from Sections V-B/V-C/V-F), hub size, FFL contribution,
@@ -325,8 +357,9 @@ blurb blocking them) and every tab written for someone who hasn't read the paper
   unresolved, with reasons), the overall family-size distribution, every k=3/k=4
   family found with a "touches the clock network" marker, a browsable table of every
   clock-network gene with any detected paralog, and a searchable gene→family lookup.
-- Every tab opens with an `st.expander("ℹ️ ...")` explaining what the controls do and
-  what to look for, so no tab assumes prior context from another one.
+- **Methodology & Paper Comparison** keeps the validation table and citation visible
+  (they're compact and load-bearing) but tucks the file-by-file reproduced-vs-novel
+  breakdown and the "why the numbers don't match" writeup behind expanders.
 
 It reads the cached results (`data/processed/null_model_results.npz`,
 `data/processed/enrichment_results.csv`, `data/processed/gene_families.csv`,
@@ -373,7 +406,8 @@ neurospora_clock_model/
 │   ├── raw/
 │   │   ├── Connection_Matrix.xlsx
 │   │   ├── binding_strength_by_function.csv
-│   │   ├── MuThetaDataSim_m4.txt      # pending gene IDs from data source, see README
+│   │   ├── MuThetaDataSim_m4.txt      # simulated Mu/Theta dataset -- see README
+│   │   ├── ALLNCU.txt                 # gene IDs for MuThetaDataSim_m4.txt, same row order
 │   │   └── uniprotkb_proteome_UP000001805_2026_07_02.fasta
 │   └── processed/             # cached null-model, enrichment, gene-family, 3D-layout, mutheta-sim results (app reads these)
 ├── src/
@@ -387,10 +421,10 @@ neurospora_clock_model/
 │   ├── link_analysis.py       # done
 │   ├── gene_layout_3d.py      # done
 │   ├── binding_strength.py    # done
-│   ├── mutheta_loader.py      # done, not yet wired into app -- see README
+│   ├── mutheta_loader.py      # done, wired into the app's Mu/Theta Sim tab
 │   └── sequence_families.py   # done
 ├── app/streamlit_app.py       # done
-├── tests/                     # done (72 tests)
+├── tests/                     # done (78 tests)
 │   ├── test_ffl_count.py
 │   ├── test_viz.py
 │   ├── test_link_analysis.py
