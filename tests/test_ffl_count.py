@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from data_loader import load_clean  # noqa: E402
 from network_builder import WCC_INDEX, build_network  # noqa: E402
 from ffl_analysis import count_ffls  # noqa: E402
-from enrichment import _triple_overlap_pmf, pairwise_enrichment, run_all_enrichment_tests  # noqa: E402
+from enrichment import _nway_intersection_pmf, pairwise_enrichment, run_all_enrichment_tests  # noqa: E402
 from null_models import _double_edge_swap, _ffl_count_from_matrix  # noqa: E402
 
 DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "raw", "Connection_Matrix.xlsx")
@@ -120,23 +120,40 @@ def test_double_edge_swap_preserves_row_and_column_sums(net):
 # --- enrichment --------------------------------------------------------
 
 def test_enrichment_test_counts():
-    """55 pairs + 165 triples = 220 tests, per C(11,2) and C(11,3)."""
+    """55 pairs + 165 triples + 330 quartets = 550 tests, per C(11,2), C(11,3), C(11,4)."""
     from math import comb
 
     assert comb(11, 2) == 55
     assert comb(11, 3) == 165
+    assert comb(11, 4) == 330
 
 
 def test_triple_overlap_pmf_sums_to_one():
-    pmf = _triple_overlap_pmf(N=3026, n1=200, n2=150, n3=100)
+    pmf = _nway_intersection_pmf(N=3026, sizes=[200, 150, 100])
     assert pmf.sum() == pytest.approx(1.0, abs=1e-8)
 
 
 def test_triple_overlap_pmf_matches_expectation_formula():
     N, n1, n2, n3 = 3026, 200, 150, 100
-    pmf = _triple_overlap_pmf(N, n1, n2, n3)
+    pmf = _nway_intersection_pmf(N, [n1, n2, n3])
     mean_from_pmf = float(np.dot(np.arange(len(pmf)), pmf))
     expected_closed_form = n1 * n2 * n3 / (N ** 2)
+    assert mean_from_pmf == pytest.approx(expected_closed_form, rel=1e-6)
+
+
+def test_quartet_overlap_pmf_sums_to_one():
+    pmf = _nway_intersection_pmf(N=3026, sizes=[200, 150, 100, 80])
+    assert pmf.sum() == pytest.approx(1.0, abs=1e-8)
+
+
+def test_quartet_overlap_pmf_matches_expectation_formula():
+    N, sizes = 3026, [200, 150, 100, 80]
+    pmf = _nway_intersection_pmf(N, sizes)
+    mean_from_pmf = float(np.dot(np.arange(len(pmf)), pmf))
+    expected_closed_form = 1.0
+    for n in sizes:
+        expected_closed_form *= n
+    expected_closed_form /= N ** (len(sizes) - 1)
     assert mean_from_pmf == pytest.approx(expected_closed_form, rel=1e-6)
 
 
@@ -149,7 +166,7 @@ def test_pairwise_enrichment_shape(net):
 
 def test_bh_correction_monotonic(net):
     combined = run_all_enrichment_tests(net)
-    assert len(combined) == 220
+    assert len(combined) == 550
     sorted_p = combined.sort_values("p_value")["q_value"].values
     # q-values must be non-decreasing when sorted by ascending raw p-value
     assert np.all(np.diff(sorted_p) >= -1e-12)

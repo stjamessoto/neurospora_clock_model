@@ -3,18 +3,20 @@
 Reads the fitted regulator -> target matrix from Al-Omari, Griffith, Scruse,
 Robinson, Schuttler & Arnold (2022), IEEE Access 10:32510-32524, and adds
 statistical tests (a degree-preserving null model for the FFL count;
-BH-FDR-corrected pairwise/triple regulator co-targeting enrichment) that the
+BH-FDR-corrected pairwise/triple/quartet regulator co-targeting enrichment) that the
 paper itself did not perform.
 
 Run with: streamlit run app/streamlit_app.py
 """
 from __future__ import annotations
 
+import base64
 import os
 import sys
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -68,6 +70,11 @@ from mutheta_loader import (  # noqa: E402
 from st_link_analysis import st_link_analysis  # noqa: E402
 
 DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "raw", "Connection_Matrix.xlsx")
+
+_DOCS_DIR = os.path.join(os.path.dirname(__file__), "..", "docs")
+FULL_PAPER_MD_PATH = os.path.join(_DOCS_DIR, "full_methodology_paper.md")
+FULL_PAPER_PDF_PATH = os.path.join(_DOCS_DIR, "full_methodology_paper.pdf")
+FULL_PAPER_DOCX_PATH = os.path.join(_DOCS_DIR, "full_methodology_paper.docx")
 
 PAPER_CITATION = (
     "Al-Omari, A. M., Griffith, J., Scruse, A., Robinson, R. W., Schuttler, H.-B., "
@@ -164,9 +171,9 @@ FILE_BLURBS = {
         "count is more than chance would predict."
     ),
     "enrichment.py": (
-        "runs the hypergeometric (pairs) and convolved-hypergeometric (triples) "
-        "significance tests for every regulator combination, then applies the "
-        "Benjamini-Hochberg FDR correction across all 220 of them."
+        "runs the hypergeometric (pairs) and convolved-hypergeometric (triples, "
+        "quartets) significance tests for every regulator combination, then "
+        "applies the Benjamini-Hochberg FDR correction across all 550 of them."
     ),
     "network_stats.py": (
         "computes the degree distribution, hub sizes, power-law fit, and the "
@@ -204,6 +211,49 @@ def file_ref(filename: str) -> str:
     so a reader without access to the Python source still knows what it does."""
     desc = FILE_BLURBS.get(filename)
     return f"`src/{filename}` (which {desc})" if desc else f"`src/{filename}`"
+
+
+def tab_jump_button(
+    label: str, key: str, target_tab_text: str = "Methodology", anchor_id: str | None = None
+) -> None:
+    """Render a button that switches to the top-level tab whose label contains
+    `target_tab_text` (and, if given, scrolls to `anchor_id` within it).
+    Streamlit's st.tabs has no built-in programmatic-switch API, so this
+    clicks the tab's own button via a small injected script -- the only
+    reliable way to jump across tabs in Streamlit.
+    """
+    if st.button(label, key=key):
+        scroll_js = (
+            f"""
+            setTimeout(() => {{
+                const el = doc.getElementById("{anchor_id}");
+                if (el) el.scrollIntoView({{behavior: "smooth", block: "start"}});
+            }}, 350);
+            """
+            if anchor_id
+            else ""
+        )
+        components.html(
+            f"""
+            <script>
+                const doc = window.parent.document;
+                const tabs = doc.querySelectorAll('button[role="tab"]');
+                for (const t of tabs) {{
+                    if (t.innerText && t.innerText.includes("{target_tab_text}")) {{
+                        t.click();
+                        break;
+                    }}
+                }}
+                {scroll_js}
+            </script>
+            """,
+            height=0,
+        )
+
+
+# Backwards-compatible alias -- existing call sites jump to the Methodology tab.
+def methodology_jump_button(label: str, key: str, anchor_id: str | None = None) -> None:
+    tab_jump_button(label, key, target_tab_text="Methodology", anchor_id=anchor_id)
 
 
 st.set_page_config(page_title="Neurospora Clock Network", layout="wide", page_icon="🕐")
@@ -319,6 +369,38 @@ def _load_mutheta_comparison():
     return compare_theta_dominance_to_real_network(connection_matrix_path=DATA_PATH)
 
 
+@st.cache_data
+def _load_full_paper_summary():
+    """Extracts just the "Executive Summary" section of the full paper's
+    markdown source (between that heading and the next top-level heading) --
+    the in-app tab shows this short summary, not the whole document; the
+    whole document is what the PDF/Word downloads and "open in new tab" are
+    for."""
+    if not os.path.exists(FULL_PAPER_MD_PATH):
+        return None
+    with open(FULL_PAPER_MD_PATH, "r", encoding="utf-8") as f:
+        text = f.read()
+    marker = "# Executive Summary"
+    start = text.find(marker)
+    if start == -1:
+        return None
+    start += len(marker)
+    end = text.find("\n# ", start)
+    section = text[start:end] if end != -1 else text[start:]
+    section = section.strip()
+    if section.endswith("---"):
+        section = section[:-3].strip()
+    return section
+
+
+@st.cache_data
+def _load_file_bytes(path: str):
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        return f.read()
+
+
 net = _load_network()
 cleaning_report = _load_cleaning_report()
 enrichment_df = _load_enrichment()
@@ -332,6 +414,9 @@ gene_layout_3d_result = _load_gene_layout_3d()
 binding_strength_df = _load_binding_strength()
 mutheta_df = _load_mutheta_sim()
 regulator_gene_names = resolve_regulator_gene_names(REGULATOR_INFO)
+full_paper_summary = _load_full_paper_summary()
+full_paper_pdf_bytes = _load_file_bytes(FULL_PAPER_PDF_PATH)
+full_paper_docx_bytes = _load_file_bytes(FULL_PAPER_DOCX_PATH)
 
 # ---------------------------------------------------------------------------
 # Header (kept short so the tabs are visible without scrolling)
@@ -344,7 +429,7 @@ st.caption(
     "**Overview** tab."
 )
 
-tab_overview, tab_matrix, tab_binding, tab_mutheta, tab_ffl, tab_enrich, tab_viz, tab_families, tab_method = st.tabs(
+tab_overview, tab_matrix, tab_binding, tab_mutheta, tab_ffl, tab_enrich, tab_viz, tab_families, tab_method, tab_paper = st.tabs(
     [
         "🏠 Overview",
         "📋 Matrix Explorer",
@@ -355,6 +440,7 @@ tab_overview, tab_matrix, tab_binding, tab_mutheta, tab_ffl, tab_enrich, tab_viz
         "🕸️ Network Viz",
         "🧬 Gene Families",
         "📖 Methodology & Paper Comparison",
+        "📄 Full Paper",
     ]
 )
 
@@ -599,14 +685,23 @@ with tab_mutheta:
             """
 Two more user-supplied files: `data/raw/MuThetaDataSim_m4.txt` (2,418 simulated
 records, CR-delimited, no header) and `data/raw/ALLNCU.txt` (its gene IDs, supplied
-afterward — confirmed to be in the same row order, since both files are exactly
-2,418 lines long).
+afterward). Their row order is a confirmed one-to-one correspondence — this is the
+indexing used throughout the analysis to associate each record's Mu/Theta values
+with its gene, not just an inference from matching line counts.
 
 Each record has two blocks:
-- **Mu** (10 values) — continuous, roughly 0-100. What these represent is still an
-  open question.
+- **Mu** (10 values) — continuous, roughly 0-100. **Confirmed:** these are
+  *conditional* ensemble averages, not simple means, over an ensemble of 2,000
+  MCMC runs. For each ensemble member, the regulator with the largest inferred
+  binding strength for that gene is identified as dominant; a Mu column's value is
+  the average binding strength of its regulator *only* over the ensemble members
+  where that regulator was dominant for the gene — not an average over all 2,000
+  members. Still open: which of this project's 10 non-WCC regulators each of
+  `mu_0`..`mu_9` positionally corresponds to.
 - **Theta** (6 values) — always sums to exactly 1.0: a probability/mixture-weight
-  vector over 6 categories.
+  vector over 6 categories. The conditional-averaging clarification above is
+  specific to Mu; Theta's identity is separately tested (and refuted, for the one
+  hypothesis tried) below.
 
 **Confirmed:** every one of the 2,216 distinct genes in `ALLNCU.txt` is a real
 target gene in this project's `Connection_Matrix.xlsx` — this dataset shares its
@@ -767,31 +862,33 @@ histogram below shows.
 # ---------------------------------------------------------------------------
 
 with tab_enrich:
-    st.subheader("Pairwise & triple-wise regulator co-targeting enrichment")
+    st.subheader("Pairwise, triple-wise & quartet-wise regulator co-targeting enrichment")
     with st.expander("ℹ️ What does this test mean, and how do I use the filters?"):
         st.markdown(
             """
-For every pair (55) and every group of three (165) of the 11 regulators, this asks:
-*do they share more — or fewer — target genes than you'd expect by chance, given
-how many targets each one has?* The chance baseline is an exact **hypergeometric
-test** (the same math behind "what are the odds of drawing this many red balls from
-an urn").
+For every pair (55), every group of three (165), and every group of four (330) of
+the 11 regulators, this asks: *do they share more — or fewer — target genes than
+you'd expect by chance, given how many targets each one has?* The chance baseline
+is an exact **hypergeometric test** (the same math behind "what are the odds of
+drawing this many red balls from an urn"), extended to triples and quartets by
+sequential convolution (see the module docstring in `enrichment.py`).
 
-Because 220 tests are run at once, a raw p-value of 0.05 doesn't mean what it
-usually means — by chance alone, ~11 of 220 tests would look "significant." The
+Because 550 tests are run at once, a raw p-value of 0.05 doesn't mean what it
+usually means — by chance alone, ~28 of 550 tests would look "significant." The
 **q-value** column fixes this (Benjamini-Hochberg FDR correction): filter on
 `q-value ≤ 0.05` and at most 5% of *those* results are expected to be false
-positives, even across all 220 tests together.
+positives, even across all 550 tests together.
 
-**Using the filters below:** narrow to just pairs or just triples, just enriched or
-just depleted relationships, and toggle "significant only" to hide anything that
-doesn't clear the q ≤ 0.05 bar. Click a column header in the table to sort by it.
+**Using the filters below:** narrow to pairs, triples, and/or quartets, just
+enriched or just depleted relationships, and toggle "significant only" to hide
+anything that doesn't clear the q ≤ 0.05 bar. Click a column header in the table
+to sort by it.
 """
         )
     st.caption(
-        "Pairs use an exact hypergeometric test; triples use a convolved-hypergeometric "
-        f"test (see module docstring for the derivation) — both run by {file_ref('enrichment.py')}. "
-        "The paper never ran either test."
+        "Pairs use an exact hypergeometric test; triples and quartets use a "
+        "convolved-hypergeometric test (see module docstring for the derivation) — "
+        f"all run by {file_ref('enrichment.py')}. The paper never ran any of them."
     )
 
     if enrichment_df is None:
@@ -815,15 +912,21 @@ doesn't clear the q ≤ 0.05 bar. Click a column header in the table to sort by 
             help=(
                 "Of the significant results, how many are enrichments (more shared "
                 "targets than chance) vs. depletions (fewer than chance). "
-                f"{n_sig_enriched} enriched, {n_sig_depleted} depleted here — see "
-                "the Methodology tab for why depletions dominate so completely."
+                f"{n_sig_enriched} enriched, {n_sig_depleted} depleted here — use "
+                "the button below the table to jump to why depletions dominate so "
+                "completely."
             ),
+        )
+        methodology_jump_button(
+            "📖 Why depletions dominate — jump to Methodology",
+            key="jump_methodology_top",
+            anchor_id="why-depleted-anchor",
         )
 
         col_a, col_b, col_c = st.columns(3)
         test_type_filter = col_a.multiselect(
-            "Test type", ["pair", "triple"], default=["pair", "triple"],
-            help="Pair = 2 regulators compared; triple = 3 regulators compared at once.",
+            "Test type", ["pair", "triple", "quartet"], default=["pair", "triple", "quartet"],
+            help="Pair = 2 regulators compared; triple = 3; quartet = 4, all at once.",
         )
         direction_filter = col_b.multiselect(
             "Direction", ["enriched", "depleted"], default=["enriched", "depleted"],
@@ -852,8 +955,11 @@ doesn't clear the q ≤ 0.05 bar. Click a column header in the table to sort by 
         )
         st.markdown(
             "**Finding:** every significant result is a *depletion* — no regulator "
-            "pair or triple shares more targets than chance. See the Methodology tab "
-            "for why."
+            "pair, triple, or quartet shares more targets than chance."
+        )
+        methodology_jump_button(
+            "📖 See the Methodology tab for why", key="jump_methodology_bottom",
+            anchor_id="why-depleted-anchor",
         )
 
 # ---------------------------------------------------------------------------
@@ -894,6 +1000,11 @@ diagram. Use the **significance threshold** slider to loosen or tighten which
 chords count as "significant," and the checkboxes to show only enriched or only
 depleted relationships.
 """
+            )
+            methodology_jump_button(
+                "📖 Why every chord is red — jump to Methodology",
+                key="jump_methodology_viz",
+                anchor_id="why-depleted-anchor",
             )
 
         view_mode = st.segmented_control(
@@ -1412,9 +1523,9 @@ and {file_ref('ffl_analysis.py')}:
 **Novel in this project (the paper never computed these):**
 - A degree-preserving double-edge-swap null model giving an empirical Z-score and
   p-value for the FFL count — {file_ref('null_models.py')}.
-- Exact hypergeometric pairwise and convolved-hypergeometric triple-wise regulator
-  co-targeting enrichment tests across all 220 combinations, Benjamini-Hochberg
-  FDR corrected at α = 0.05 — {file_ref('enrichment.py')}.
+- Exact hypergeometric pairwise and convolved-hypergeometric triple- and
+  quartet-wise regulator co-targeting enrichment tests across all 550 combinations,
+  Benjamini-Hochberg FDR corrected at α = 0.05 — {file_ref('enrichment.py')}.
 - Sequence-based paralog gene families from real protein sequence data —
   {file_ref('sequence_families.py')}.
 - Force-directed layouts of every regulator plus all 3,026 target genes — the
@@ -1445,8 +1556,9 @@ across tabs so the same colors and layout logic are used everywhere.
     validation_df["This export"] = validation_df["This export"].astype(str)
     st.table(validation_df)
 
+    st.markdown('<div id="why-depleted-anchor"></div>', unsafe_allow_html=True)
     st.subheader("Root cause of the divergence")
-    with st.expander("🔍 Why the numbers don't match"):
+    with st.expander("🔍 Why the numbers don't match", expanded=True):
         st.markdown(
             """
 Every gene in this exported matrix is regulated by **at most 2** of the 11
@@ -1462,8 +1574,8 @@ dominant regulator(s) per gene) rather than the full multi-way estimate — see 
 continuous estimates look like and what they don't support. That single
 structural fact explains essentially every downstream divergence above: a lower
 total FFL count, zero genes with overlapping FFLs, and — for the enrichment tests
-— every significant result being a *depletion* (any two regulators' target sets
-are pushed toward mutual exclusivity purely as a side effect of the
+— every significant result being a *depletion* (any combination of regulators'
+target sets is pushed toward mutual exclusivity purely as a side effect of the
 binarization, not necessarily real biological antagonism).
 
 This is flagged rather than silently reconciled: report discrepancies, don't force
@@ -1506,9 +1618,9 @@ numbers to match.
 - **p-value** — the probability of seeing an overlap this extreme (or more) by pure
   chance, if there's really no relationship.
 - **q-value (BH-FDR corrected)** — a p-value adjusted for running many tests at
-  once (220, here), so "5% of my *significant* results are false positives" stays
-  true even after testing every regulator pair and triple. Always use q-value, not
-  raw p-value, to decide significance when many tests are run together.
+  once (550, here), so "5% of my *significant* results are false positives" stays
+  true even after testing every regulator pair, triple, and quartet. Always use
+  q-value, not raw p-value, to decide significance when many tests are run together.
 - **Enriched vs. depleted** — enriched = two regulators share *more* targets than
   chance predicts; depleted = *fewer* than chance predicts.
 - **Paralog / gene family** — genes descended from a common ancestral gene via
@@ -1518,3 +1630,134 @@ numbers to match.
   physical gene (see Gene Families tab), the one name kept to represent it.
 """
         )
+
+    st.divider()
+    st.markdown(
+        "**Want the full story, written for a general audience?** The **Full Paper** "
+        "tab has a complete, plain-language write-up of everything in this app — the "
+        "biology, every method, every result, and why the numbers come out the way "
+        "they do — plus a downloadable PDF and Word copy."
+    )
+    tab_jump_button(
+        "📄 Read the Full Paper — jump to that tab",
+        key="jump_full_paper",
+        target_tab_text="Full Paper",
+    )
+
+# ---------------------------------------------------------------------------
+# Tab: full plain-language paper (read-in-app + downloadable PDF/Word)
+# ---------------------------------------------------------------------------
+
+with tab_paper:
+    st.subheader("The Full Paper: A Plain-Language Guide")
+    st.caption(
+        "A complete, plain-language write-up of everything in this app — the "
+        "biology, every method, every result, and why the numbers come out the way "
+        "they do — written for a reader with no statistics or molecular-biology "
+        "background, with every technical term defined before it's used. The "
+        "executive summary below hits the highlights; download or open the full "
+        "document (~7,000 words) for everything."
+    )
+
+    if full_paper_pdf_bytes is None and full_paper_docx_bytes is None:
+        st.info(
+            f"Paper files not found at `{FULL_PAPER_PDF_PATH}` / "
+            f"`{FULL_PAPER_DOCX_PATH}`. Generate them from "
+            f"`docs/full_methodology_paper.md` (see README's \"Running what exists\" "
+            f"section)."
+        )
+    else:
+        col1, col2, col3 = st.columns(3)
+        if full_paper_pdf_bytes is not None:
+            col1.download_button(
+                "⬇️ Download as PDF",
+                data=full_paper_pdf_bytes,
+                file_name="neurospora_clock_network_full_paper.pdf",
+                mime="application/pdf",
+                width="stretch",
+            )
+        else:
+            col1.info("PDF not generated yet.")
+
+        if full_paper_docx_bytes is not None:
+            col2.download_button(
+                "⬇️ Download as Word (.docx)",
+                data=full_paper_docx_bytes,
+                file_name="neurospora_clock_network_full_paper.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                width="stretch",
+            )
+        else:
+            col2.info("Word doc not generated yet.")
+
+        if full_paper_pdf_bytes is not None:
+            # A plain data: URI here gets silently blocked by Chromium's
+            # top-level-navigation policy for data: URLs opened via
+            # target="_blank" -- and a real server route would need Streamlit's
+            # static-file serving enabled and a mirrored copy of the PDF kept in
+            # sync, which is one more moving part than this needs. Instead:
+            # embed the PDF bytes right in the page and, in the browser, decode
+            # them into a Blob and open that via window.open() -- no server
+            # route, no extra file, and blob: URLs aren't subject to the same
+            # data: URI navigation block.
+            #
+            # This has to be rendered via components.html (a real iframe), not
+            # st.markdown(unsafe_allow_html=True): Streamlit's markdown path
+            # sanitizes out inline event-handler attributes like `onclick` even
+            # with unsafe_allow_html=True (verified directly -- the attribute is
+            # silently dropped), so the click handler would never fire there.
+            # components.html's iframe isn't sanitized and its button click
+            # keeps the real user-gesture context window.open() needs to avoid
+            # being treated as a popup.
+            #
+            # Inside the onclick attribute specifically (not a <script> tag),
+            # the browser wraps inline event-handler code in `with(document){
+            # with(form){ with(element){ ... } } }` for legacy scoping reasons
+            # -- and `document.URL` (a string, the page's own URL) shadows the
+            # bare `URL` identifier that would otherwise resolve to the global
+            # URL constructor. Referencing `window.URL.createObjectURL`
+            # explicitly (verified directly -- the bare form throws
+            # "URL.createObjectURL is not a function" here) sidesteps the
+            # shadowing since `window` isn't a property of document/form/element.
+            pdf_b64 = base64.b64encode(full_paper_pdf_bytes).decode("ascii")
+            with col3:
+                components.html(
+                    f"""
+                    <style>
+                        /* The browser's UA stylesheet puts an 8px margin on body by
+                        default -- left alone, it pushes the button down/right of
+                        where the real st.download_button()s in the other two
+                        columns sit, breaking the row's alignment. */
+                        html, body {{ margin: 0; padding: 0; }}
+                    </style>
+                    <button onclick="
+                        var bin = atob('{pdf_b64}');
+                        var arr = new Uint8Array(bin.length);
+                        for (var i = 0; i < bin.length; i++) {{ arr[i] = bin.charCodeAt(i); }}
+                        var blob = new Blob([arr], {{type: 'application/pdf'}});
+                        window.open(window.URL.createObjectURL(blob), '_blank');
+                    " style="
+                        display: inline-flex; align-items: center; justify-content: center;
+                        width: 100%; box-sizing: border-box; padding: 0.4rem 0.75rem;
+                        border: 1px solid rgba(49, 51, 63, 0.2); border-radius: 0.5rem;
+                        background-color: #ffffff; color: inherit; text-decoration: none;
+                        font-family: 'Source Sans', -apple-system, BlinkMacSystemFont,
+                            'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+                        font-weight: 400; font-size: 16px; line-height: 1.6;
+                        height: 2.5rem; cursor: pointer;
+                    ">
+                        🔗 Open PDF in New Tab
+                    </button>
+                    """,
+                    height=40,
+                )
+        else:
+            col3.info("PDF not generated yet.")
+
+    st.divider()
+    st.markdown("### Executive Summary")
+
+    if full_paper_summary is None:
+        st.info(f"Paper text not found at `{FULL_PAPER_MD_PATH}`.")
+    else:
+        st.markdown(full_paper_summary)

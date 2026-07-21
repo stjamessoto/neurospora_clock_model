@@ -20,19 +20,35 @@ assumed):**
    scenarios/configurations; siblings such as ``_m1``-``_m3`` may exist but
    are not present in this repo).
 4. ``ALLNCU.txt`` is a plain newline-delimited list of NCU gene IDs, also
-   exactly 2418 lines -- confirmed to be in the same order as the sim
-   records (see ``load_mutheta_sim_with_genes``). It has 202 duplicate
-   lines (2216 distinct genes across 2418 rows) -- some genes appear at
-   more than one ``sim_index``, each with its own Mu/Theta values.
+   exactly 2418 lines. Row order is a one-to-one, per-gene correspondence
+   with ``MuThetaDataSim_m4.txt`` -- confirmed by the data source (not just
+   inferred from the matching line counts) to be the indexing used
+   throughout the analysis to associate each Mu/Theta record with its
+   gene (see ``load_mutheta_sim_with_genes``). It has 202 duplicate lines
+   (2216 distinct genes across 2418 rows) -- some genes appear at more than
+   one ``sim_index``, each with its own Mu/Theta values.
 
 **What the two blocks are, and what is/isn't confirmed:**
 
 - Indices 0-9 ("Mu"): 10 continuous values per record, roughly in
-  ``[0, 100]``, mean near 50 for most columns. Read as 10 simulated
-  feature/measurement values; their real-world meaning is not yet known.
+  ``[0, 100]``. Per the data source: these are **conditional ensemble
+  averages**, not unconditional means, over an ensemble of 2000 MCMC runs.
+  For each ensemble member, the run's code finds the regulator with the
+  largest inferred binding strength for that gene; a given Mu column's
+  value for the gene is the average of that regulator's binding strength
+  taken *only* over the ensemble members in which it was the dominant
+  regulator for that gene, not an average over all 2000 members. This
+  confirms what the values represent in general (per-gene, per-regulator
+  conditional-dominance binding strengths, joined to genes via the
+  ``ALLNCU.txt`` row order above) -- what is still NOT confirmed is which
+  of this project's 10 non-WCC regulators each of ``mu_0``..``mu_9``
+  positionally corresponds to; treat the column-to-regulator identity as
+  open even though the column's *meaning* is now known.
 - Indices 10-15 ("Theta"): exactly 6 non-negative values per record that
   sum to ``1.0`` in every record (verified, not assumed) -- unambiguously a
-  probability / mixture-weight vector over 6 categories.
+  probability / mixture-weight vector over 6 categories. The data source's
+  clarification above was specific to Mu; Theta's semantic identity is
+  still tested (and refuted, for the tested hypothesis) below.
 
 **Confirmed by the gene list:** every one of the 2216 distinct genes in
 ``ALLNCU.txt`` is present as a real target-gene column in the cleaned

@@ -24,11 +24,14 @@ coli").
 `src/null_models.py`, `src/enrichment.py`, `src/network_stats.py`, `src/viz.py`,
 `src/sequence_families.py`, `src/link_analysis.py`, `src/gene_layout_3d.py`,
 `src/binding_strength.py`, `src/mutheta_loader.py`, `app/streamlit_app.py`, plus the
-full `tests/` suite (78 tests, passing).
+full `tests/` suite (80 tests, passing).
 
-**Not yet built:** exploration notebook. **Open question:** what `data/raw/
-MuThetaDataSim_m4.txt`'s Mu/Theta values actually represent — gene identity is now
-confirmed (`ALLNCU.txt`) but the leading hypothesis (Theta = per-gene
+**Not yet built:** exploration notebook. **Open question:** which of this project's
+10 non-WCC regulators each of `MuThetaDataSim_m4.txt`'s `mu_0`..`mu_9` columns
+positionally corresponds to, and what the Theta block represents — gene identity is
+confirmed (`ALLNCU.txt`, one-to-one, same record count as the sim file) and Mu's
+general nature is now confirmed too (conditional ensemble averages, not simple
+means — see below), but the leading hypothesis for Theta (per-gene
 post-transcriptional-regulator assignment) has been tested and refuted — see
 "Simulated Mu/Theta dataset" below.
 
@@ -78,7 +81,11 @@ every candidate target, and the network *topology* and its *kinetic parameters*
 are estimated **jointly** by MCMC — each accepted sample is one entire candidate
 network consistent with the mRNA time-course data, not 11 independent draws per
 gene. `Connection_Matrix.xlsx` is a thresholded snapshot of that joint fit (the
-dominant regulator(s) per gene), not the full multi-way estimate. **The reported
+dominant regulator(s) per gene), not the full multi-way estimate. Since every gene
+tops out at 2 regulators, no gene can ever be a shared target of 3 or more
+regulators at once — so every 3-way and 4-way overlap in this export is
+*structurally* zero, not just statistically depleted (see the enrichment section
+below). **The reported
 binding strengths are therefore joint ensemble point estimates, not independent
 per-parameter distributions — there is no marginal "does the ensemble exclude
 zero" test to run on them**, and `data/raw/binding_strength_by_function.csv` /
@@ -110,16 +117,31 @@ claim this data supports.
 
 Two more user-supplied files: `data/raw/MuThetaDataSim_m4.txt` (a simulated dataset)
 and `data/raw/ALLNCU.txt` (its gene-identifier list, supplied afterward, same row
-order — confirmed, not assumed, since both are exactly 2418 entries long).
+order). The two files line up record-for-record: `MuThetaDataSim_m4.txt` parses to
+exactly 2418 records and `ALLNCU.txt` has exactly 2418 lines — checked directly
+(`len(_read_records(...)) == len(load_gene_list(...))`), not assumed from the
+file-format writeup alone. Row order is a confirmed one-to-one correspondence (per
+the data source, not just inferred from the matching counts): this is the indexing
+used throughout the analysis to associate each record's Mu/Theta values with its
+gene.
 
 **Format, confirmed by direct inspection of the raw file:**
 - `MuThetaDataSim_m4.txt` uses bare `\r` (CR-only) line endings — splitting on `\n`
   collapses it to one line. Correctly split, it holds **2418 records**, each 16
   `index\tvalue` pairs (indices `0`-`15`, no header, no ID column of its own).
-- Indices 0-9 ("Mu"): 10 continuous values per record, ~`[0, 100]`.
+- Indices 0-9 ("Mu"): 10 continuous values per record, ~`[0, 100]`. **Confirmed:**
+  these are *conditional* ensemble averages, not simple means, over an ensemble of
+  2,000 MCMC runs — for each ensemble member, the regulator with the largest
+  inferred binding strength for that gene is identified as dominant, and a Mu
+  column's value is the average binding strength of its regulator *only* over the
+  ensemble members where that regulator was dominant for the gene (not an average
+  over all 2,000 members). Still open: which of this project's 10 non-WCC
+  regulators each of `mu_0`..`mu_9` positionally corresponds to.
 - Indices 10-15 ("Theta"): 6 non-negative values that sum to **exactly 1.0 in
   every one of the 2418 records** — a probability/mixture-weight vector over 6
-  categories.
+  categories. The conditional-averaging confirmation above is specific to Mu;
+  Theta's identity is separately tested (and refuted, for the one hypothesis
+  tried) below.
 - `ALLNCU.txt` is 2418 lines, 2216 distinct NCU gene IDs (202 genes repeat, each
   repeat getting its own sim row/Mu/Theta values).
 
@@ -191,23 +213,37 @@ the null model holds fixed. Whether the paper's *own* full continuous-ensemble n
 (768 targets on lhp-1 alone, up to 11 regulators/gene) would still show this
 degree-sequence-driven non-significance is an open question this export cannot answer.
 
-## Novel extension: pairwise and triple-wise regulator co-targeting enrichment
+## Novel extension: pairwise, triple-wise, and quartet-wise regulator co-targeting enrichment
 
-`src/enrichment.py` tests all C(11,2) = 55 regulator pairs and C(11,3) = 165 regulator
-triples for shared-target enrichment against an exact hypergeometric null (pairs) and
-an exact convolved-hypergeometric null (triples — see module docstring for the exact
-two-stage derivation), then applies Benjamini–Hochberg FDR correction across all
-55 + 165 = 220 tests at α = .05 (full results: `data/processed/enrichment_results.csv`).
+`src/enrichment.py` tests all C(11,2) = 55 regulator pairs, C(11,3) = 165 regulator
+triples, and C(11,4) = 330 regulator quartets for shared-target enrichment against an
+exact hypergeometric null (pairs) and an exact convolved-hypergeometric null (triples
+and quartets — see module docstring for the sequential-convolution derivation, which
+generalizes to any group size), then applies Benjamini–Hochberg FDR correction across
+all 55 + 165 + 330 = 550 tests at α = .05 (full results:
+`data/processed/enrichment_results.csv`).
 
-**63 / 220 tests are significant after correction — and every single one of them is a
-depletion, not an enrichment.** E.g. NCU06108 + lhp-1 share only 17 target genes where
-~141 would be expected by chance (q ≈ 1.9e-51); no pair or triple shows significantly
-*more* co-targeting than chance. This is the same structural signature as the FFL
-result above, seen from a different angle: because this export assigns each gene to
-at most 2 regulators, any two regulators' target sets are pushed toward mutual
-exclusivity purely as a side effect of that binarization, not because of biologically
-meaningful antagonism. This is flagged as a property of the data export, not
-interpreted as a biological claim about the real regulatory network.
+**60 / 550 tests are significant after correction (41 pairs, 19 triples, 0
+quartets) — and every single one of them is a depletion, not an enrichment.** E.g.
+NCU06108 + lhp-1 share only 17 target genes where ~141 would be expected by chance
+(q ≈ 4.6e-51); no pair, triple, or quartet shows significantly *more* co-targeting
+than chance.
+
+**Every triple and every quartet — not just the significant ones — has an observed
+overlap of exactly zero, with no exceptions across all 495 of them.** This isn't a
+statistical pattern that happens to hold; it's a direct, mechanical consequence of
+the "at most 2 regulators per gene" finding above — a gene can only ever belong to
+the intersection of 3+ regulators' target sets if it's targeted by all of them
+simultaneously, which this export's binarization makes impossible by construction.
+The quartet tests exist mainly to make this structural ceiling explicit and
+quantify how far short of chance-level co-targeting it falls (e.g. the closest
+quartet to significance, pro-1 + NCU06108 + NCU07155 + lhp-1, still only reaches
+p ≈ 0.12, q ≈ 0.71 — not close, because ~2.8 shared targets would already have been
+expected by chance for that foursome). At the pairwise level, some pairs *do* share
+targets (45 of 55 pairs have nonzero overlap) — it's specifically going from 2 to 3+
+simultaneous regulators that the export's structure forbids outright. This is
+flagged as a property of the data export, not interpreted as a biological claim
+about the real regulatory network.
 
 ## Novel extension: sequence-based paralog gene families (`src/sequence_families.py`)
 
@@ -325,10 +361,11 @@ sequential blue hue for magnitude/fit lines and the binding-strength heatmap:
 - A binding-strength-by-function heatmap (`binding_strength_heatmap`) — sequential
   blue for magnitude, exact zeros rendered as blank surface.
 
-`app/streamlit_app.py` is a 9-tab dashboard — **Overview**, Matrix Explorer,
+`app/streamlit_app.py` is a 10-tab dashboard — **Overview**, Matrix Explorer,
 Binding Strengths, **Mu/Theta Sim**, FFLs & Null Model, Enrichment Tests, Network
-Viz, Gene Families, Methodology & Paper Comparison — with the tabs immediately below
-the title and every tab written for someone who hasn't read the paper. Every
+Viz, Gene Families, Methodology & Paper Comparison, **Full Paper** — with the tabs
+immediately below the title and every tab written for someone who hasn't read the
+paper. Every
 explanatory block throughout the app lives inside a collapsed-by-default
 `st.expander("ℹ️ ...")` rather than static text, so a tab's default view is metrics,
 charts, and tables — the "why"/"how to read this" prose is a click away, not
@@ -359,7 +396,32 @@ scrolled past:
   clock-network gene with any detected paralog, and a searchable gene→family lookup.
 - **Methodology & Paper Comparison** keeps the validation table and citation visible
   (they're compact and load-bearing) but tucks the file-by-file reproduced-vs-novel
-  breakdown and the "why the numbers don't match" writeup behind expanders.
+  breakdown and the "why the numbers don't match" writeup behind expanders; a button
+  at the bottom jumps to the **Full Paper** tab.
+- **Full Paper** is `docs/full_methodology_paper.md` (~7,000 words): a complete,
+  plain-language explainer of the biology, every method, and every result in this
+  project — written so someone with no statistics or molecular-biology background can
+  read it start to finish, with every technical term defined before it's used. The tab
+  itself shows just the document's "Executive Summary" section (extracted from the
+  markdown source, not duplicated by hand) plus three buttons: download as PDF,
+  download as Word (`.docx`), and **open the PDF directly in a new browser tab** —
+  implemented client-side (no server route or mirrored file needed): the PDF's bytes
+  are base64-embedded in the page, and a button click decodes them into a `Blob` and
+  opens it via `window.open(window.URL.createObjectURL(blob))`. Two non-obvious
+  browser quirks had to be worked around to get there, both confirmed by direct
+  testing rather than assumed: (1) a plain `data:` URI on an `<a target="_blank">`
+  is silently blocked by Chromium's top-level-navigation policy, so the click has to
+  build a `blob:` URL instead, which isn't subject to that block; (2) the button has
+  to live inside `st.components.v1.html` (a real iframe), not
+  `st.markdown(unsafe_allow_html=True)`, because Streamlit's markdown path strips
+  inline `onclick` attributes even with that flag set — and once inside an inline
+  `onclick=""` attribute specifically, the browser's legacy `with(document){
+  with(form){ with(element){...} } }` wrapping around event-handler attributes means
+  a bare `URL` reference resolves to `document.URL` (a string) instead of the global
+  `URL` constructor, so the handler has to say `window.URL.createObjectURL(...)`
+  explicitly. Both PDF/Word files are generated via `src/generate_paper.py` (uses
+  `pandoc` + a LaTeX engine, both external system dependencies — see that script's
+  docstring).
 
 It reads the cached results (`data/processed/null_model_results.npz`,
 `data/processed/enrichment_results.csv`, `data/processed/gene_families.csv`,
@@ -384,12 +446,14 @@ figures (background `#fcfcfb`, primary accent `#2a78d6`).
   VTENS/MCMC point estimates, transcribed as supplied).
 - **Novel extension**: a degree-preserving double-edge-swap null model giving an
   empirical Z-score/p-value for the FFL count (`null_models.py`); exact
-  hypergeometric pairwise and convolved-hypergeometric triple-wise regulator
-  co-targeting enrichment tests across all 55 + 165 = 220 combinations, BH-FDR
-  corrected at α = .05 (`enrichment.py`). The published paper never computed a
-  null-model p-value for any of these quantities — both extensions surface a
-  structural property of this particular export (near-mutual-exclusive regulator
-  assignment) that a purely qualitative comparison would have missed.
+  hypergeometric pairwise and convolved-hypergeometric triple- and quartet-wise
+  regulator co-targeting enrichment tests across all 55 + 165 + 330 = 550
+  combinations, BH-FDR corrected at α = .05 (`enrichment.py`). The published paper
+  never computed a null-model p-value for any of these quantities — both
+  extensions surface a structural property of this particular export
+  (near-mutual-exclusive regulator assignment, and a hard ceiling of zero observed
+  overlap for any 3+ regulators at once) that a purely qualitative comparison would
+  have missed.
 - **Novel extension, different data source entirely**: sequence-based paralog gene
   families from the UniProt reference proteome FASTA, using a two-stage k-mer
   prefilter + real BLOSUM62 alignment confirmation, to identify clock-network genes
@@ -410,6 +474,10 @@ neurospora_clock_model/
 │   │   ├── ALLNCU.txt                 # gene IDs for MuThetaDataSim_m4.txt, same row order
 │   │   └── uniprotkb_proteome_UP000001805_2026_07_02.fasta
 │   └── processed/             # cached null-model, enrichment, gene-family, 3D-layout, mutheta-sim results (app reads these)
+├── docs/
+│   ├── full_methodology_paper.md    # source of the "Full Paper" tab -- plain-language write-up
+│   ├── full_methodology_paper.pdf   # generated via src/generate_paper.py, downloadable in-app
+│   └── full_methodology_paper.docx  # generated via src/generate_paper.py, downloadable in-app
 ├── src/
 │   ├── data_loader.py         # done
 │   ├── network_builder.py     # done
@@ -422,9 +490,10 @@ neurospora_clock_model/
 │   ├── gene_layout_3d.py      # done
 │   ├── binding_strength.py    # done
 │   ├── mutheta_loader.py      # done, wired into the app's Mu/Theta Sim tab
-│   └── sequence_families.py   # done
+│   ├── sequence_families.py   # done
+│   └── generate_paper.py      # done, regenerates docs/full_methodology_paper.{pdf,docx} via pandoc
 ├── app/streamlit_app.py       # done
-├── tests/                     # done (78 tests)
+├── tests/                     # done (80 tests)
 │   ├── test_ffl_count.py
 │   ├── test_viz.py
 │   ├── test_link_analysis.py
@@ -442,10 +511,11 @@ python src/network_builder.py   # R/T construction
 python src/ffl_analysis.py      # FFL count + validation vs. paper
 python src/network_stats.py     # degree distribution, hub sizes, power-law fit
 python src/null_models.py       # degree-preserving null model (~8-9 min, 1000 iterations); caches to data/processed/
-python src/enrichment.py        # pairwise/triple enrichment + BH-FDR (~45s); caches to data/processed/
+python src/enrichment.py        # pairwise/triple/quartet enrichment + BH-FDR (~1 min); caches to data/processed/
 python src/sequence_families.py # sequence-based paralog families (~3 min); caches to data/processed/
 python src/gene_layout_3d.py    # 3D force-directed regulator+gene layout (~45s); caches to data/processed/
 python src/binding_strength.py  # binding-strength-by-function table, printed to stdout (no cache needed)
+python src/generate_paper.py    # regenerates docs/full_methodology_paper.{pdf,docx} via pandoc (system dependency)
 python -m pytest tests/ -v      # test suite (~50s)
 streamlit run app/streamlit_app.py   # interactive dashboard (reads the cached results above)
 ```
